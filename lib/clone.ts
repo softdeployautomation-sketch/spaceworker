@@ -17,8 +17,10 @@ import {
   runCloneRevoke,
 } from "./clone-transport";
 import { refreshDeviceLiveness, hostAvailability } from "./clone-hosts";
-import { runHostedLaunch, stopHostedLaunch } from "./clone-hosted-launch";
+import { runHostedLaunch, stopHostedLaunch, isRelayTunnelUp, relayTunnelState } from "./clone-hosted-launch";
 import { ensureHostedDestination } from "./clone-destination";
+import { hasCookieJar } from "./clone-cookie-jar";
+import { getExitNode } from "./exit-nodes";
 import { requestDeviceStateSync, stateSyncSummary } from "./clone-state-sync";
 import { deviceStatus, recordAgentActionAudit } from "./devices";
 
@@ -135,7 +137,7 @@ const PIPELINE_NEXT: Partial<Record<CloneState, readonly CloneState[]>> = {
   awaiting_source: ["capturing"],
   awaiting_capture: ["captured"],
   capturing: ["captured"],
-  captured: ["transferring"],
+  captured: ["transferring", "ready"],
   transferring: ["received"],
   received: ["injecting"],
   injecting: ["ready"],
@@ -469,8 +471,16 @@ export async function requestClone(input: RequestCloneInput): Promise<RequestClo
     throw new Error(message);
   };
 
-  if (input.egress !== "relay" && input.egress !== "direct") {
-    return refuse("bad_egress", "Egress must be relay (same IP) or direct.");
+  // TASK_243 — three kinds of egress: relay (same IP, needs the PC + relay),
+  // direct (SpaceWorker's IP), and a configured exit node (US/CA/UK — the same
+  // socks5 route the private browser uses). Exit routes need no agent, so they
+  // keep working with the source PC offline.
+  const exitNodeId = input.egress.startsWith("exit:") ? input.egress.slice("exit:".length) : null;
+  if (input.egress !== "relay" && input.egress !== "direct" && !exitNodeId) {
+    return refuse("bad_egress", "Egress must be relay (same IP), direct (SpaceWorker's IP), or a configured exit route.");
+  }
+  if (exitNodeId && !getExitNode(exitNodeId)) {
+    return refuse("bad_egress", "That exit route is not available right now — pick another, or use SpaceWorker's IP.");
   }
   if (input.browser && !isCloneBrowser(input.browser)) {
     return refuse("bad_browser", "Unsupported browser for a clone.");
@@ -604,6 +614,18 @@ export async function requestClone(input: RequestCloneInput): Promise<RequestClo
     // empty pool (e.g. its query ran before the row existed), fall back to the
     // hosted row rather than refusing on a technicality.
     destinationDeviceId = hosts.pickedDeviceId ?? hostedDestinationId;
+  }
+
+  // TASK_243 — an exit route is a proxy on our hosted browser; a workstation
+  // destination has no way to dial it, so refuse rather than silently ignore.
+  if (exitNodeId) {
+    const dest = await db.device.findUnique({
+      where: { id: destinationDeviceId },
+      select: { deviceKind: true },
+    });
+    if (dest?.deviceKind !== "hosted") {
+      return refuse("bad_egress", "Exit routes need SpaceWorker's hosted browser — a workstation destination cannot use one.");
+    }
   }
 
   // Create the record. TTLs are STAMPED from the settings at creation
@@ -743,8 +765,28 @@ async function advanceCloneLocked(cloneId: string): Promise<CloneAdvanceResult> 
       // capture lands), never a transport step. Dispatching nothing is the
       // point: this state exists so advanceClone has nothing to run.
       return { cloneId, status: "awaiting_capture", advanced: false, reason: "awaiting_live_capture" };
-    case "captured":
+    case "captured": {
+      // TASK_243 — a hosted LIVE job has no engine bundle to transfer: the
+      // captured cookies are injected at launch (runHostedLaunch → CDP). Go
+      // straight to ready so the next advance launches and injects, instead of
+      // the workstation transfer step failing `no_engine_clone_id`.
+      if (job.sessionMode === "live" && job.destinationDeviceId) {
+        const destination = await db.device.findUnique({
+          where: { id: job.destinationDeviceId },
+          select: { deviceKind: true },
+        });
+        if (destination?.deviceKind === "hosted") {
+          const advanced = await transitionClone(job, "ready", {
+            detail: {
+              step: "live-capture-ready",
+              skipped: "transfer_receive_inject (hosted live — injected at launch)",
+            },
+          });
+          return { cloneId: advanced.id, status: "ready", advanced: true };
+        }
+      }
       return stepTransfer(job);
+    }
     case "received":
       return stepValidateInjection(job);
     case "injecting":
@@ -992,48 +1034,84 @@ async function stepRequested(
     });
   }
 
-  // Capture runs ON the source — it must be online regardless of egress mode.
+  // TASK_243 — the destination decides whether the source is even needed. A
+  // hosted clone with direct/exit egress has nothing to capture (route 3), so
+  // it must run with the PC offline. Only relay egress, a workstation
+  // destination, or a live capture with no saved jar needs the source online.
+  const destination = job.destinationDeviceId
+    ? await db.device.findUnique({ where: { id: job.destinationDeviceId }, select: { deviceKind: true } })
+    : null;
+  const isHostedDestination = destination?.deviceKind === "hosted";
+  const jarAvailable =
+    job.sessionMode === "live"
+      ? await hasCookieJar({
+          deviceId: job.sourceDeviceId,
+          browser: job.browser,
+          profileName: job.profileName,
+        })
+      : false;
+  const needsSourceOnline =
+    job.egressMode === "relay" || !isHostedDestination || (job.sessionMode === "live" && !jarAvailable);
+
+  // Capture runs ON the source — it must be online whenever it is actually used.
   const source = await db.device.findUnique({
     where: { id: job.sourceDeviceId },
-    select: { id: true, status: true, lastSeenAt: true, vantraAgentId: true },
+    select: { id: true, status: true, lastSeenAt: true, onlineConfirmedAt: true, vantraAgentId: true },
   });
   if (!source) {
     const reason = "source_device_missing";
     await transitionClone(job, "failed", { reason, auditStatus: "failed" });
     return { ...base, status: "failed", advanced: true, reason };
   }
-  if (deviceStatus(source) !== "online") {
+  const sourceOnline = deviceStatus(source) === "online";
+  // A hosted live clone with the PC offline is only possible from a saved jar;
+  // say so by name instead of waiting forever on a PC that will never answer.
+  if (isHostedDestination && job.sessionMode === "live" && !sourceOnline && !jarAvailable) {
+    const reason =
+      "no_saved_session: the PC is offline and no saved sign-in exists for this browser/profile — connect the PC once, or start a fresh clone";
+    await transitionClone(job, "failed", { reason, auditStatus: "failed" });
+    return { ...base, status: "failed", advanced: true, reason };
+  }
+  if (needsSourceOnline && !sourceOnline) {
     return { ...base, status: "requested", advanced: false, reason: "source_offline" };
   }
 
-  // Relay gate: probe EXACTLY once here, before capture. Fail closed when the
-  // relay is unhealthy — a refusal naming the relay, never a silent downgrade
-  // (cloneRelayRequired=false is the admin's explicit escape hatch; the egress
-  // policy stays "relay" either way and the engine re-checks [IP CHECK 2]).
+  // Relay gate. The CONSTANT connection for a relay clone is the relay's own
+  // dial-out tunnel to browser-server — the very path the hosted browser
+  // egresses through — so that is the authoritative probe. The TRMM agent
+  // command probe is kept only as a fallback/diagnostic: a command-channel blip
+  // must never fail a clone whose relay tunnel is demonstrably up.
+  // (cloneRelayRequired=false stays the admin's explicit escape hatch; the
+  // egress policy stays "relay" either way and the engine re-checks [IP CHECK 2].)
   if (job.egressMode === "relay" && job.relay) {
-    let probe: Awaited<ReturnType<typeof probeCloneRelay>> | null = null;
-    let probeError: string | null = null;
-    try {
-      probe = await probeCloneRelay({
-        userId: job.userId,
-        cloneJobId: job.id,
-        sourceDeviceId: job.sourceDeviceId,
-      });
-    } catch (err) {
-      probeError = errMessage(err);
-    }
-    await stampRelayHealth(job.sourceDeviceId, probe);
-    const unhealthy = probe?.status !== "up";
-    if (unhealthy && settings.relayRequired) {
-      const reason = probe
-        ? `relay_unhealthy: egress relay on ${job.relay.addr} probed "${probe.status}" — relay must be up before capture`
-        : `relay_unreachable: ${probeError ?? "probe failed"} — relay must be up before capture`;
-      await transitionClone(job, "failed", {
-        reason,
-        auditStatus: "failed",
-        detail: { relayAddr: job.relay.addr, relayStatus: probe?.status ?? "down" },
-      });
-      return { ...base, status: "failed", advanced: true, reason };
+    const tunnelUp = await isRelayTunnelUp(job.sourceDeviceId);
+    if (tunnelUp) {
+      await stampRelayHealth(job.sourceDeviceId, { status: "up" });
+    } else {
+      let probe: Awaited<ReturnType<typeof probeCloneRelay>> | null = null;
+      let probeError: string | null = null;
+      try {
+        probe = await probeCloneRelay({
+          userId: job.userId,
+          cloneJobId: job.id,
+          sourceDeviceId: job.sourceDeviceId,
+        });
+      } catch (err) {
+        probeError = errMessage(err);
+      }
+      await stampRelayHealth(job.sourceDeviceId, probe);
+      const unhealthy = probe?.status !== "up";
+      if (unhealthy && settings.relayRequired) {
+        const reason = probe
+          ? `relay_unhealthy: egress relay on ${job.relay.addr} probed "${probe.status}" — relay must be up before capture`
+          : `relay_unreachable: ${probeError ?? "probe failed"} — relay must be up before capture`;
+        await transitionClone(job, "failed", {
+          reason,
+          auditStatus: "failed",
+          detail: { relayAddr: job.relay.addr, relayStatus: probe?.status ?? "down" },
+        });
+        return { ...base, status: "failed", advanced: true, reason };
+      }
     }
   }
 
@@ -1048,9 +1126,6 @@ async function stepRequested(
   // TASK_119A V9 (second pass): a hosted `live` job needs its OWN third edge
   // — "awaiting_capture", not "awaiting_source" (see PIPELINE_NEXT's doc
   // comment for why the two must not be conflated).
-  const destination = job.destinationDeviceId
-    ? await db.device.findUnique({ where: { id: job.destinationDeviceId }, select: { deviceKind: true } })
-    : null;
 
   // TASK_105 — the POOLED hosted PC is itself a RAM consumer, so a hosted clone
   // needs a pool slot as well as a session slot. With the governor OFF this
@@ -1072,32 +1147,48 @@ async function stepRequested(
     }
   }
 
-  if (destination?.deviceKind === "hosted" && job.sessionMode === "live") {
-    // TASK_135 §6.3 — the STATE half of the clone, started automatically here.
-    // This is the step that already gates on the source being online and the relay
-    // being healthy, and it is the last point before the profile is materialised
-    // at launch — so it is where a transfer belongs. It is awaited BECAUSE the
-    // launch reads the manifest, and it never fails the clone: a transfer that
-    // could not finish is recorded by name and counted, and the clone still runs
-    // (the cookie half does not depend on it).
-    const stateNote = await collectProfileState(job);
+  if (isHostedDestination && job.sessionMode === "live") {
+    // TASK_243 — with the PC online we wait for a fresh capture (the device
+    // POSTs it). With the PC offline but a durable jar on disk, skip the
+    // round-trip and launch straight from the saved sign-in.
+    if (sourceOnline) {
+      // TASK_135 §6.3 — the STATE half of the clone, started automatically here.
+      // This is the step that already gates on the source being online and the relay
+      // being healthy, and it is the last point before the profile is materialised
+      // at launch — so it is where a transfer belongs. It is awaited BECAUSE the
+      // launch reads the manifest, and it never fails the clone: a transfer that
+      // could not finish is recorded by name and counted, and the clone still runs
+      // (the cookie half does not depend on it).
+      const stateNote = await collectProfileState(job);
 
-    const advanced = await transitionClone(job, "awaiting_capture", {
+      const advanced = await transitionClone(job, "awaiting_capture", {
+        detail: {
+          slot: "granted",
+          egressMode: job.egressMode,
+          relayStatus: job.relay?.status ?? null,
+          skipped: "capture_transfer_inject (hosted live destination — capture arrives via device POST)",
+          ...(stateNote ? { stateSync: stateNote } : {}),
+        },
+      });
+      return { cloneId: advanced.id, status: "awaiting_capture", advanced: true };
+    }
+    const advanced = await transitionClone(job, "ready", {
       detail: {
         slot: "granted",
         egressMode: job.egressMode,
         relayStatus: job.relay?.status ?? null,
-        skipped: "capture_transfer_inject (hosted live destination — capture arrives via device POST)",
-        ...(stateNote ? { stateSync: stateNote } : {}),
+        skipped: "capture_wait (source offline — injecting the saved cookie jar at launch)",
       },
     });
-    return { cloneId: advanced.id, status: "awaiting_capture", advanced: true };
+    return { cloneId: advanced.id, status: "ready", advanced: true };
   }
-  if (destination?.deviceKind === "hosted") {
+  if (isHostedDestination) {
     // Route 3 ("the hosted browser logs in for itself") has no cookie capture, so
     // the STATE half is the only thing that makes the clone recognisably the
     // user's — carried here too, for the same reason and under the same rules.
-    const stateNote = await collectProfileState(job);
+    // TASK_243 — with the PC offline there is nothing to carry; launch anyway
+    // (direct/exit egress needs no source).
+    const stateNote = sourceOnline ? await collectProfileState(job) : null;
 
     const advanced = await transitionClone(job, "ready", {
       detail: {
@@ -1386,7 +1477,11 @@ async function stepLaunch(
     return { ...base, status: "failed", advanced: true, reason };
   }
   if (!res.ok) {
-    const reason = `launch_exit_${res.exitCode ?? "unknown"} (launch not ok)`;
+    // TASK_243 — keep the NAMED cause (relay_offline, exit_egress_unverified,
+    // browser_start_failed, …) instead of collapsing every launch failure into
+    // "launch_exit_unknown". The user and the audit both need the real reason.
+    const named = (res as { error?: string }).error;
+    const reason = named ?? `launch_exit_${res.exitCode ?? "unknown"} (launch not ok)`;
     await transitionClone(cur, "failed", {
       reason,
       auditStatus: "failed",
@@ -1499,7 +1594,7 @@ export async function revokeClone(
  */
 async function terminalEndClone(
   job: CloneJob,
-  to: "revoked" | "expired_idle" | "expired_hard",
+  to: "revoked" | "expired_idle" | "expired_hard" | "failed",
   opts: { actor?: string; reason: string; teardown: string }
 ): Promise<CloneJob> {
   const stopped = await db.hostedBrowserSession.updateMany({
@@ -1508,7 +1603,7 @@ async function terminalEndClone(
   });
   return transitionClone(job, to, {
     reason: opts.reason,
-    auditStatus: to === "revoked" ? "executed" : "expired",
+    auditStatus: to === "revoked" ? "executed" : to === "failed" ? "failed" : "expired",
     detail: {
       ...(opts.actor ? { actor: opts.actor } : {}),
       teardown: opts.teardown,
@@ -1576,6 +1671,68 @@ export async function expireClones(): Promise<ExpireClonesResult> {
         cloneId: job.id,
         detail: { reason: `expire_error: ${errMessage(err)}` },
       });
+    }
+  }
+  return out;
+}
+
+export interface RelayFailClosedCounts {
+  scanned: number;
+  stopped: number;
+  errors: number;
+}
+
+/**
+ * TASK_243 — a relay clone must DIE with its relay, not linger pointing at a
+ * dead proxy. The hosted container's proxy listener already rejects new
+ * streams when the control connection is gone, but the session record stayed
+ * `active`; this sweep closes that gap: an `active` relay job whose tunnel is
+ * provably DOWN is stopped and marked failed with a reason that names the
+ * relay. An "unknown" probe (browser-server hiccup) never kills a session.
+ */
+export async function enforceRelayFailClosed(): Promise<RelayFailClosedCounts> {
+  const out: RelayFailClosedCounts = { scanned: 0, stopped: 0, errors: 0 };
+  const jobs = await db.cloneJob.findMany({
+    where: { status: "active", egressMode: "relay" },
+    select: {
+      id: true,
+      sourceDeviceId: true,
+      destinationDeviceId: true,
+      userId: true,
+      pendingActionId: true,
+    },
+    take: 50,
+  });
+  out.scanned = jobs.length;
+  for (const job of jobs) {
+    try {
+      const state = await relayTunnelState(job.sourceDeviceId);
+      if (state !== "down") continue;
+      await withCloneLock(job.id, async () => {
+        const fresh = await loadClone(job.id);
+        if (fresh.status !== "active") return; // raced with revoke/expiry
+        const teardown = fresh.destinationDeviceId
+          ? await teardownTransport(fresh, fresh.destinationDeviceId)
+          : "skipped";
+        await terminalEndClone(fresh, "failed", {
+          actor: "system",
+          reason: "relay_lost: the egress relay disconnected — the session was stopped rather than leak your IP",
+          teardown,
+        });
+        out.stopped += 1;
+      });
+    } catch (err) {
+      out.errors += 1;
+      await recordAgentActionAudit({
+        userId: job.userId,
+        pendingActionId: job.pendingActionId ?? undefined,
+        action: "browser-clone",
+        status: "failed",
+        sourceDeviceId: job.sourceDeviceId,
+        destinationDeviceId: job.destinationDeviceId ?? undefined,
+        cloneId: job.id,
+        detail: { reason: `relay_failclosed_error: ${errMessage(err)}` },
+      }).catch(() => {});
     }
   }
   return out;

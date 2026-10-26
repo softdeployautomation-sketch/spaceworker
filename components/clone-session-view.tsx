@@ -128,10 +128,21 @@ export function CloneSessionView({ cloneId }: { cloneId: string }) {
     }
   }
 
-  const browser = data?.display.browser === "edge" ? "Edge" : data?.display.browser === "firefox" ? "Firefox" : "Chrome";
-  const egressLine = data && data.display.egressMode === "direct"
-    ? "SpaceWorker's IP — sites may ask you to sign in again"
-    : "Same IP as your PC";
+  const browser =
+    data?.display.browser === "edge"
+      ? "Edge"
+      : data?.display.browser === "brave"
+        ? "Brave"
+        : data?.display.browser === "firefox"
+          ? "Firefox"
+          : "Chrome";
+  const egressLine = !data
+    ? ""
+    : data.display.egressMode === "direct"
+      ? "SpaceWorker's IP — sites may ask you to sign in again"
+      : data.display.egressMode.startsWith("exit:")
+        ? `${data.display.egressMode.slice("exit:".length).toUpperCase()} exit route — sites may ask you to sign in again`
+        : "Same IP as your PC";
   const ready = data !== null && data.status === "active" && !!data.openUrl && !revoked;
   const headline = revoked ? "Revoked" : data ? stepLabel(data.status) : "Loading…";
 

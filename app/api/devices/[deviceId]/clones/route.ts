@@ -204,14 +204,18 @@ export async function POST(
   }
 
   const egress = body.egress;
-  if (egress !== "relay" && egress !== "direct") {
-    return NextResponse.json({ error: "egress must be relay or direct." }, { status: 400 });
+  const isExitRoute = typeof egress === "string" && /^exit:[a-z0-9_-]+$/i.test(egress);
+  if (egress !== "relay" && egress !== "direct" && !isExitRoute) {
+    return NextResponse.json(
+      { error: "egress must be relay, direct, or exit:<node>." },
+      { status: 400 }
+    );
   }
   if (
     body.browser !== undefined &&
     !(typeof body.browser === "string" && BROWSERS.has(body.browser))
   ) {
-    return NextResponse.json({ error: "browser must be chrome, edge or firefox." }, { status: 400 });
+    return NextResponse.json(      { error: "browser must be chrome, edge, brave or firefox." }, { status: 400 });
   }
   if (body.profile !== undefined && typeof body.profile !== "string") {
     return NextResponse.json({ error: "profile must be a string." }, { status: 400 });
@@ -241,7 +245,7 @@ export async function POST(
       ...(typeof body.destinationDeviceId === "string"
         ? { destinationDeviceId: body.destinationDeviceId }
         : {}),
-      egress,
+      egress: egress as "relay" | "direct" | `exit:${string}`,
       ...(typeof body.browser === "string"
         ? { browser: body.browser as "chrome" | "edge" | "firefox" }
         : {}),

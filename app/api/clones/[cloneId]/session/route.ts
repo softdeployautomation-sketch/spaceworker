@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getSession } from "@/lib/session";
 import { getClone } from "@/lib/clone";
+import { getCloneSettings } from "@/lib/clone-settings";
 
 export const dynamic = "force-dynamic";
 
@@ -49,6 +50,23 @@ export async function GET(
       return NextResponse.json({ error: "not_found", reason: "No such clone." }, { status: 404 });
     }
 
+    // TASK_243 — an OPEN clone is in use: refresh the idle clock on every
+    // session read so the 15 s window poll can never let it expire mid-use.
+    // The hard TTL still caps the session.
+    let idleExpiresAt: string | null = clone.idleExpiresAt;
+    if (clone.status === "active" && row.status === "running") {
+      const settings = await getCloneSettings();
+      const now = new Date();
+      const next = new Date(now.getTime() + settings.idleTtlMinutes * 60_000);
+      idleExpiresAt = next.toISOString();
+      await db.cloneJob
+        .update({ where: { id: cloneId }, data: { lastUsedAt: now, idleExpiresAt: next } })
+        .catch(() => {});
+      await db.hostedBrowserSession
+        .update({ where: { cloneJobId: cloneId }, data: { lastUsedAt: now } })
+        .catch(() => {});
+    }
+
     return NextResponse.json({
       ok: true,
       cloneId,
@@ -74,7 +92,9 @@ export async function GET(
         launchedAt: clone.launchedAt,
         expiresAt: clone.expiresAt,
         ttlRemainingMs: clone.ttlRemainingMs,
-        idleRemainingMs: clone.idleRemainingMs,
+        idleRemainingMs: idleExpiresAt
+          ? Math.max(0, new Date(idleExpiresAt).getTime() - Date.now())
+          : clone.idleRemainingMs,
       },
     });
   } catch {

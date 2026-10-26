@@ -8,6 +8,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { sha256Hex } from "@/lib/clone-transport";
 import { storeCapture } from "@/lib/clone-live-capture";
+import { persistCookieJar } from "@/lib/clone-cookie-jar";
 import { recordLiveCapture } from "@/lib/clone";
 
 const BODY_SIZE_CAP = 1024 * 1024; // 1 MiB per spec A5
@@ -103,6 +104,8 @@ export async function POST(request: NextRequest) {
         sourceDeviceId: true,
         status: true,
         sessionMode: true,
+        browser: true,
+        profileName: true,
       },
     });
     if (
@@ -128,7 +131,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 8. Validate payload fields (A5: "payload validation, shape, caps, sanity").
-    if (!payload.browser || !["chrome", "edge", "firefox"].includes(payload.browser)) {
+    if (!payload.browser || !["chrome", "edge", "brave", "firefox"].includes(payload.browser)) {
       return NextResponse.json(
         { error: "Bad request: invalid browser" },
         { status: 400 }
@@ -177,6 +180,19 @@ export async function POST(request: NextRequest) {
       cookies: payload.cookies,
       truncated: payload.truncated,
     });
+
+    // TASK_243 — make the sign-in durable for this TARGET so a later clone can
+    // be opened with the PC offline. Encrypted at rest; a write failure must
+    // never fail the capture that already landed (the in-memory payload still
+    // covers this launch).
+    await persistCookieJar(
+      {
+        deviceId: cloneJob.sourceDeviceId,
+        browser: cloneJob.browser,
+        profileName: cloneJob.profileName,
+      },
+      payload.cookies,
+    ).catch(() => {});
 
     // 12. Return neutral success (202 Accepted, counts only per A5).
     return NextResponse.json(

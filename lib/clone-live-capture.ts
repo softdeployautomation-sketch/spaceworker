@@ -5,6 +5,7 @@
 import { db } from "./db";
 import { injectCookies } from "./cdp";
 import type { CdpCookie } from "./cdp";
+import { loadCookieJar } from "./clone-cookie-jar";
 
 export interface LiveCapturePayload {
   cloneJobId: string;
@@ -63,20 +64,42 @@ export async function injectLiveCapture(opts: {
   injectedCount?: number;
 }> {
   const payload = getCapture(opts.cloneJobId);
-  if (!payload) {
+  let cookies: CdpCookie[] | null = payload?.cookies ?? null;
+  let capturedAt: string | null = payload?.capturedAt ?? null;
+  const truncated = payload?.truncated ?? false;
+  // TASK_243 — the durable jar covers a launch whose in-memory payload expired
+  // (or a clone started with the PC offline). Same fail-closed rules apply.
+  if (!cookies) {
+    const job = await db.cloneJob.findUnique({
+      where: { id: opts.cloneJobId },
+      select: { sourceDeviceId: true, browser: true, profileName: true },
+    });
+    if (job) {
+      const jar = await loadCookieJar({
+        deviceId: job.sourceDeviceId,
+        browser: job.browser,
+        profileName: job.profileName,
+      });
+      if (jar) {
+        cookies = jar.cookies;
+        capturedAt = jar.capturedAt;
+      }
+    }
+  }
+  if (!cookies) {
     return { ok: false, error: "capture_not_found" };
   }
 
   try {
     // Fail-closed: reject if capture has 0 cookies (even if truncated=false, it's suspicious).
-    if (payload.cookies.length === 0) {
+    if (cookies.length === 0) {
       return { ok: false, error: "empty_capture" };
     }
 
     // Inject via CDP (proven mechanism from TASK_117).
     const result = await injectCookies({
       port: opts.cdpPort,
-      cookies: payload.cookies,
+      cookies,
       timeoutMs: opts.timeoutMs || 30000,
     });
 
@@ -86,28 +109,33 @@ export async function injectLiveCapture(opts: {
     }
 
     // Record counts on the session (A6: "record cookieCount/domainCount").
-    const domainCount = new Set(payload.cookies.map((c) => c.domain)).size;
-    await db.hostedBrowserSession.update({
-      where: { cloneJobId: opts.cloneJobId },
-      data: {
-        sessionMode: "live",
-        cookieCount: payload.cookies.length,
-        domainCount,
-        sessionTruncated: payload.truncated,
-        capturedAt: new Date(payload.capturedAt),
-        // TASK_119A A4's acceptance: the port that actually carried the
-        // injection is stamped on the session, not just used and forgotten —
-        // otherwise nothing on the record proves the endpoint existed, and a
-        // later restart (which re-allocates it) has no old value to invalidate.
-        cdpPort: opts.cdpPort,
-      },
-    });
+    // Non-fatal: the row may not exist yet on the very first launch (the caller
+    // upserts it before injecting), and a bookkeeping miss must never tear down
+    // a browser whose cookies actually landed.
+    const domainCount = new Set(cookies.map((c) => c.domain)).size;
+    await db.hostedBrowserSession
+      .update({
+        where: { cloneJobId: opts.cloneJobId },
+        data: {
+          sessionMode: "live",
+          cookieCount: cookies.length,
+          domainCount,
+          sessionTruncated: truncated,
+          ...(capturedAt ? { capturedAt: new Date(capturedAt) } : {}),
+          // TASK_119A A4's acceptance: the port that actually carried the
+          // injection is stamped on the session, not just used and forgotten —
+          // otherwise nothing on the record proves the endpoint existed, and a
+          // later restart (which re-allocates it) has no old value to invalidate.
+          cdpPort: opts.cdpPort,
+        },
+      })
+      .catch(() => {});
 
     // Clear the payload from memory (A5: "delete after use").
     clearCapture(opts.cloneJobId);
 
     return { ok: true, injectedCount: result.count };
-  } catch (err) {
+  } catch {
     clearCapture(opts.cloneJobId);
     // V7: Fixed error message (never echo CDP errors that could contain cookie values).
     return { ok: false, error: "injection_failed" };

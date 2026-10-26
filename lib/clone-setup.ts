@@ -7,6 +7,7 @@ import { deviceStatus } from "./devices";
 import { refreshRelayHealth } from "./clone";
 import { hostAvailability, refreshDeviceLiveness } from "./clone-hosts";
 import { ensureHostedDestination } from "./clone-destination";
+import { listExitNodes } from "./exit-nodes";
 
 import {
   ensureCloneCapability,
@@ -141,6 +142,8 @@ export interface CloneSetupStatus {
   selfIsHost: boolean;
   /** Clone hosts of this account that exist but are offline, by name. */
   offlineHostNames: string[];
+  /** TASK_243 — exit routes configured on this deployment (US/CA/UK). */
+  exitNodes: Array<{ id: string; label: string }>;
 }
 
 function psq(value: string): string {
@@ -781,6 +784,8 @@ export async function cloneSetupStatus(opts: {
     hostBlockReason: hosts.reason,
     selfIsHost: hosts.selfIsHost,
     offlineHostNames: hosts.offlineHostNames,
+    // TASK_243 — the exit routes this deployment actually has configured.
+    exitNodes: listExitNodes().map((n) => ({ id: n.id, label: `${n.countryCode} exit` })),
   };
 }
 

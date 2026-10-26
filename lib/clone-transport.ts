@@ -109,7 +109,7 @@ export {
   type CloneBrowser,
   type NonCarriableBrowser,
 } from "./clone-browsers";
-export type CloneEgress = "relay" | "direct";
+export type CloneEgress = "relay" | "direct" | `exit:${string}`;
 export type CloneStep = "capture" | "receive" | "launch" | "status" | "revoke" | "relay-install" | "relay-probe";
 
 // Derived from the one list in lib/clone-browsers.ts, not restated: a fourth
