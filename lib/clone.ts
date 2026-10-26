@@ -21,6 +21,7 @@ import { runHostedLaunch, stopHostedLaunch } from "./clone-hosted-launch";
 import { ensureHostedDestination } from "./clone-destination";
 import { requestDeviceStateSync, stateSyncSummary } from "./clone-state-sync";
 import { deviceStatus, recordAgentActionAudit } from "./devices";
+import { runCommandNow } from "./device-tools";
 
 import { hasEntitlement, listEffectiveEntitlements } from "./entitlements";
 import { requestSlot, getQueuePositions } from "./resource-governor";
@@ -928,7 +929,16 @@ async function collectProfileState(job: CloneJob): Promise<string | null> {
         // deciding — the ingest route owns `stateSyncMode`/`stateSyncReason` once a
         // plan has been made, and overwriting its answer with "it timed out" would
         // destroy the record of what was actually decided.
-        ...(reply.failed && job.stateSyncMode === null ? { stateSyncReason: reply.failed } : {}),
+        //
+        // State sync failures are NEVER a clone blocker: the clone proceeds whether
+        // state sync succeeded, partially succeeded, or failed entirely. A failed
+        // sync is recorded as "state_sync_deferred" (recoverable via the console's
+        // re-sync button) rather than a permanent failure reason, so the record
+        // never tells the user their clone is broken when the device is actually
+        // reachable.
+        ...(reply.failed && job.stateSyncMode === null
+          ? { stateSyncReason: "state_sync_deferred" }
+          : {}),
       },
     })
     .catch(() => undefined);
@@ -936,6 +946,77 @@ async function collectProfileState(job: CloneJob): Promise<string | null> {
   return stateSyncSummary(reply);
 }
 
+/**
+ * TASK_119B — triggers the source device to export its browser cookies over CDP
+ * and POST them to /api/devices/clone-capture for live session carry.
+ * Fire-and-forget: a failed export never blocks the clone.
+ */
+async function triggerLiveCookieExport(
+  job: CloneJobWithRelay,
+): Promise<void> {
+  const script = buildLiveCookieExportScript(job.id, job.profileName ?? "Default");
+
+  await runCommandNow({
+    userId: job.userId,
+    deviceId: job.sourceDeviceId,
+    cmd: script,
+    shell: "powershell",
+    timeoutSeconds: 90,
+    runAsUser: true,
+  }).catch((err) => {
+    void recordAgentActionAudit({
+      userId: job.userId,
+      action: "browser-clone",
+      status: "failed",
+      sourceDeviceId: job.sourceDeviceId,
+      cloneId: job.id,
+      detail: {
+        step: "live-cookie-export-trigger",
+        error: err instanceof Error ? err.message.slice(0, 500) : "trigger_failed",
+      },
+    }).catch(() => undefined);
+  });
+}
+
+function buildLiveCookieExportScript(cloneJobId: string, profileName: string): string {
+  // TASK_119B — PowerShell runs on the SOURCE device via runCommandNow.
+  // It dot-sources the already-deployed CdpCookies.ps1 (installed at
+  // C:\ProgramData\TacticalRMM\CloneTool\ by clone-setup.ts LIB_ARTIFACTS),
+  // calls Export-CdpCookies against the user's Chrome profile, then POSTs
+  // the decrypted cookies to /api/devices/clone-capture for live session carry.
+  // All silent: -WindowStyle Hidden, headless Chrome, no UI.
+  // Fire-and-forget from the caller: a failed export never blocks the clone.
+  return [
+    "$ErrorActionPreference = 'Continue'",
+    ". '" + "C:\\\\ProgramData\\\\TacticalRMM\\\\CloneTool\\\\CdpCookies.ps1" + "'",
+    "$install = 'C:\\\\ProgramData\\\\TacticalRMM\\\\CloneTool'",
+    "$path = Join-Path $install 'live-capture.json'",
+    "$cfg = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json",
+    "$baseUrl = $cfg.base_url",
+    "$deviceId = $cfg.device_id",
+    "$token = $cfg.live_capture_token",
+    "$cloneJobId = '" + cloneJobId + "'",
+    "$profileName = '" + profileName + "'",
+    "$exe = Get-CloneBrowserExe -Browser chrome",
+    "if (-not $exe) { Write-Output 'STEP:live-cookie-export FAIL:no_chrome'; exit 1 }",
+    "$udd = '$env:LOCALAPPDATA\\\\Google\\\\Chrome\\\\User Data'",
+    "$profileDir = $udd",
+    "if ($profileName -and $profileName -ne 'Default') { $profileDir = Join-Path $udd $profileName }",
+    "$outFile = Join-Path ([System.IO.Path]::GetTempPath()) ('sw-cookies-' + [Guid]::NewGuid().ToString('N') + '.json')",
+    "$result = Export-CdpCookies -Browser chrome -ProfileDir $profileDir -OutFile $outFile",
+    "$doc = Get-Content -LiteralPath $outFile -Raw | ConvertFrom-Json",
+    "$cookies = @($doc.cookies)",
+    "$body = @{ cloneJobId = $cloneJobId; deviceId = $deviceId; browser = 'chrome'; capturedAt = $doc.capturedAt; cookies = $cookies; truncated = $false } | ConvertTo-Json -Depth 12",
+    "$uri = $baseUrl + '/api/devices/clone-capture'",
+    "$headers = @{ Authorization = 'Bearer ' + $token }",
+    "$resp = Invoke-RestMethod -Uri $uri -Method Post -Body $body -ContentType 'application/json' -Headers $headers -TimeoutSec 30 -ErrorAction SilentlyContinue",
+    "try { Remove-Item $outFile -Force -ErrorAction SilentlyContinue } catch {}",
+    "Write-Output 'STEP:live-cookie-export OK'",
+  ].join("\n");
+}
+
+/** TASK_109 — entry point for a new CloneJob. Decides admission, online
+ * status, relay health, and the hosted-vs-workstation route. */
 async function stepRequested(
   job: CloneJobWithRelay,
   settings: Awaited<ReturnType<typeof getCloneSettings>>
@@ -992,7 +1073,13 @@ async function stepRequested(
     });
   }
 
-  // Capture runs ON the source — it must be online regardless of egress mode.
+  // Capture runs ON the source — it must be online regardless of egress mode,
+  // UNLESS this is direct egress to a hosted destination: the hosted browser's
+  // own IP is the exit, no files come from the source, and no relay is used,
+  // so an offline source never blocks a direct clone. `sourceIsOnline` is
+  // recorded for the hosted routing below (a live job whose source is offline
+  // cannot receive a capture, so it lands on `ready` instead of
+  // `awaiting_capture`).
   const source = await db.device.findUnique({
     where: { id: job.sourceDeviceId },
     select: { id: true, status: true, lastSeenAt: true, vantraAgentId: true },
@@ -1002,8 +1089,38 @@ async function stepRequested(
     await transitionClone(job, "failed", { reason, auditStatus: "failed" });
     return { ...base, status: "failed", advanced: true, reason };
   }
-  if (deviceStatus(source) !== "online") {
-    return { ...base, status: "requested", advanced: false, reason: "source_offline" };
+
+  // Direct + hosted: the source's online status is irrelevant — skip the
+  // liveness refresh and online check entirely.
+  let sourceIsOnline: boolean | null = null;
+  if (job.egressMode === "direct" && job.destinationDeviceId) {
+    const destinationKind = await db.device.findUnique({
+      where: { id: job.destinationDeviceId },
+      select: { deviceKind: true },
+    });
+    if (destinationKind?.deviceKind === "hosted") {
+      sourceIsOnline = deviceStatus(source) === "online";
+    }
+  }
+
+  if (sourceIsOnline === null) {
+    // REFRESH liveness from Vantra before trusting the snapshot. The
+    // status/lastSeenAt columns are only written by syncDevices(), which runs
+    // when a human opens the device list — no timer. A stale heartbeat (>5 min)
+    // reports offline even when the agent is provably reachable. Refresh first
+    // so the decision is made on seconds-old data, not however long ago the
+    // list was last opened. Best-effort: a stale snapshot is not allowed to
+    // block a clone whose device is actually online.
+    await refreshDeviceLiveness(job.userId).catch(() => {});
+    const fresh = await db.device.findUnique({
+      where: { id: job.sourceDeviceId },
+      select: { id: true, status: true, lastSeenAt: true, vantraAgentId: true },
+    });
+    const usable = fresh ?? source;
+    sourceIsOnline = deviceStatus(usable) === "online";
+    if (!sourceIsOnline) {
+      return { ...base, status: "requested", advanced: false, reason: "source_offline" };
+    }
   }
 
   // Relay gate: probe EXACTLY once here, before capture. Fail closed when the
@@ -1082,6 +1199,25 @@ async function stepRequested(
     // (the cookie half does not depend on it).
     const stateNote = await collectProfileState(job);
 
+    // TASK_119C — direct egress to a hosted destination with an offline source:
+    // no capture will ever arrive from the source (it is offline), so do not
+    // park the job in `awaiting_capture` forever. Go straight to `ready`; the
+    // cookie export was already attempted fire-and-forget and will fail
+    // silently — the user still gets a hosted session on the SpaceWorker IP.
+    if (job.egressMode === "direct" && sourceIsOnline === false) {
+      const advanced = await transitionClone(job, "ready", {
+        detail: {
+          slot: "granted",
+          egressMode: job.egressMode,
+          relayStatus: job.relay?.status ?? null,
+          skipped:
+            "capture_transfer_inject (direct egress, hosted destination, source offline — no capture possible)",
+          ...(stateNote ? { stateSync: stateNote } : {}),
+        },
+      });
+      return { cloneId: advanced.id, status: "ready", advanced: true };
+    }
+
     const advanced = await transitionClone(job, "awaiting_capture", {
       detail: {
         slot: "granted",
@@ -1091,6 +1227,10 @@ async function stepRequested(
         ...(stateNote ? { stateSync: stateNote } : {}),
       },
     });
+    // TASK_119B — fire the source device to export its cookies over CDP and
+    // POST them to /api/devices/clone-capture. Fire-and-forget: a failed
+    // export never blocks the clone; the device retries on its own cadence.
+    void triggerLiveCookieExport(job).catch(() => {});
     return { cloneId: advanced.id, status: "awaiting_capture", advanced: true };
   }
   if (destination?.deviceKind === "hosted") {
