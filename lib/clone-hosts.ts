@@ -68,7 +68,15 @@ function isUsable(device: {
   status: string;
   lastSeenAt: Date | null;
   onlineConfirmedAt?: Date | null;
+  deviceKind?: string;
 }): boolean {
+  // TASK_244 — the HOSTED destination is our own Neko browser, not an agent
+  // device. It has no heartbeat by design (`ensureHostedDestination` says so),
+  // so judging it by `deviceStatus()` made it age out after the last write and
+  // reported `hostedAvailable: false` / "hosted PC offline" while launches on
+  // it were succeeding. Its real gate is the browser subsystem + relay probe,
+  // both of which fail closed at launch.
+  if (device.deviceKind === "hosted") return true;
   return deviceStatus(device) === "online";
 }
 

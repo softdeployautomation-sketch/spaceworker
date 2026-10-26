@@ -31,6 +31,7 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/cn";
+import { canOpenClone, cloneOpenTitle } from "@/lib/clone-open";
 import {
   CLONE_BROWSERS,
   cloneBrowserCarryRefusal,
@@ -348,25 +349,10 @@ function isCloneLiveStatus(status: string): boolean {
   );
 }
 
-// TASK_204 — can the Open button actually produce a session right now?
-// `ready` counts: by the time a clone is `ready`, `validateInjected` has
-// PASSED (cookies are in) — the only thing between it and a live browser is
-// the `stepLaunch` call that `openCloneSession` now makes on the user's behalf.
-// `launching` counts too (the launch is already in flight; opening just watches
-// it land). Anything earlier has no injected profile yet, and terminal states
-// are dead. NOTE: this is a *clickability* gate, not a permission gate — the
-// server remains the only real authority.
-function canOpenClone(status: string): boolean {
-  return status === "active" || status === "ready" || status === "launching";
-}
-
-// Why the button is (not) clickable, said in human words for the tooltip.
-function cloneOpenTitle(status: string): string {
-  if (status === "active") return "Open the cloned browser in a new tab";
-  if (status === "ready") return "Launch the browser and open it — your cookies are already in";
-  if (status === "launching") return "The browser is starting — open it now and watch it come up";
-  return "The session opens once the browser is ready";
-}
+// TASK_244 — `canOpenClone`/`cloneOpenTitle` now live in `lib/clone-open.ts`,
+// shared with the session window so the two cannot disagree. `requested` is
+// openable too: the session window is the waiting screen and drives the first
+// step itself.
 
 function isCloneTerminalStatus(status: string): boolean {
   return (
@@ -712,6 +698,11 @@ export function DeviceConsole({
   // `ready` clone is driven once (the 12-step loop inside driveCloneLifecycle
   // does the rest) instead of being re-kicked every 15 s tick forever.
   const healKickedRef = useRef<Set<string>>(new Set());
+  // TASK_244 — `requested` needs a RETRY, not a one-shot: it can only move
+  // when the PC/relay comes back, and nothing else re-drives it. Throttled to
+  // one attempt per 20 s. Kept separate from the one-shot set above so a
+  // requested kick cannot suppress the subsequent `ready` launch kick.
+  const requestedKickRef = useRef<Map<string, number>>(new Map());
 
   // TASK_123 (B12) — keep-awake + wake-availability read model.
   const [powerView, setPowerView] = useState<PowerView | null>(null);
@@ -801,22 +792,33 @@ export function DeviceConsole({
         // clone: `ready` (any age — the user is waiting on this exact thing)
         // or `launching` with no session and no movement for 3 minutes (a
         // launch that died mid-flight; withCloneLock serialises this against
-        // any live launch so we cannot double-start one). One kick per id —
-        // advance is idempotent and the 12-step loop finishes the job. NOTE:
-        // this runs inside useCallback, not an effect body, so the
-        // set-state-in-effect suppression above does not cover it and does
-        // not need to.
+        // any live launch so we cannot double-start one). TASK_244 adds
+        // `requested`: a clone created while the PC was offline used to stay
+        // `requested` forever because driveCloneLifecycle returns on
+        // `advanced:false` and nothing retried it. It is retried every 20 s so
+        // it advances the moment the PC/relay is back. `ready`/`launching`
+        // stay one-shot per id — advance is idempotent and the 12-step loop
+        // finishes the job. NOTE: this runs inside useCallback, not an effect
+        // body, so the set-state-in-effect suppression above does not cover it
+        // and does not need to.
         for (const r of rows as CloneRow[]) {
           if (!r || r.terminal) continue;
           if (r.session) continue; // already has a session — nothing to heal
+          const stalledRequested = r.status === "requested";
           const stalledReady = r.status === "ready";
           const stalledLaunch =
             r.status === "launching" &&
             !r.session &&
             Date.now() - Date.parse(r.updatedAt || "") > 3 * 60_000;
-          if (!stalledReady && !stalledLaunch) continue;
-          if (healKickedRef.current.has(r.id)) continue;
-          healKickedRef.current.add(r.id);
+          if (!stalledRequested && !stalledReady && !stalledLaunch) continue;
+          if (stalledRequested) {
+            const lastKick = requestedKickRef.current.get(r.id) ?? 0;
+            if (Date.now() - lastKick < 20_000) continue;
+            requestedKickRef.current.set(r.id, Date.now());
+          } else {
+            if (healKickedRef.current.has(r.id)) continue;
+            healKickedRef.current.add(r.id);
+          }
           void driveCloneLifecycle(r.id);
         }
       }
@@ -855,7 +857,7 @@ export function DeviceConsole({
   // but adding it to the deps would defeat the memoisation (a new identity
   // every render → loadToolData recreated → the load effect re-fires). The
   // function it calls (pollClone) is a stable useCallback and the heal itself
-  // is one-shot per clone id via healKickedRef, so there is nothing actually
+  // is throttled per clone id via healKickedRef, so there is nothing actually
   // stale here.
   // eslint-disable-next-line react-hooks/exhaustive-deps -- see note above
   }, [deviceId]);
@@ -1512,21 +1514,24 @@ export function DeviceConsole({
     }
   }
 
-  async function startClone() {
+  async function startClone(egressOverride?: CloneEgressChoice, opts?: { forceFresh?: boolean }) {
     setCloneBusy("start");
     setCloneError("");
     setCloneNotice("");
+    const egress = egressOverride ?? cloneEgress;
     try {
       const res = await fetch(`/api/devices/${deviceId}/clones`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          egress: cloneEgress,
+          egress,
           browser: cloneBrowser,
           // Defensive: if the setup read model has not said this PC can capture
           // (or is stale), send `fresh` rather than asking for a session we
-          // know the device cannot provide.
-          sessionMode: cloneSetup?.liveCaptureReady === true ? cloneSessionMode : "fresh",
+          // know the device cannot provide. A restart-from-offline always
+          // forces `fresh` — the PC is exactly what is unavailable.
+          sessionMode:
+            opts?.forceFresh || cloneSetup?.liveCaptureReady !== true ? "fresh" : cloneSessionMode,
           ...(cloneProfile.trim() ? { profile: cloneProfile.trim() } : {}),
         }),
       });
@@ -1553,7 +1558,11 @@ export function DeviceConsole({
               : "The clone is queued — it starts when capacity frees up.";
         setCloneNotice(why);
       } else {
-        setCloneNotice("Clone requested — it starts as soon as your PC and its relay are ready.");
+        setCloneNotice(
+          egress === "relay"
+            ? "Clone requested — it starts as soon as your PC and its relay are ready."
+            : "Clone requested — it starts on SpaceWorker's browser in a moment.",
+        );
       }
       await loadToolData();
       if (cloneId) void driveCloneLifecycle(cloneId);
@@ -1609,42 +1618,47 @@ export function DeviceConsole({
     }
   }
 
-  async function openCloneSession(cloneId: string) {
-    setCloneBusy(`open-${cloneId}`);
+  function openCloneSession(cloneId: string) {
+    // TASK_244 — open the session window SYNCHRONOUSLY, inside the click.
+    // The old version awaited the lifecycle drive and a `/session` fetch before
+    // `window.open`, which browsers treat as outside the user gesture and block
+    // (the "allow pop-ups" prompt). `/clone/<id>` is now the waiting screen and
+    // drives `requested`/`ready`/`launching` itself, so the click never waits.
+    setCloneError("");
+    const url = `/clone/${cloneId}`;
+    const tab = window.open(url, "_blank");
+    if (tab) {
+      tab.opener = null;
+      return;
+    }
+    // Popup blocked: navigate this tab rather than doing nothing.
+    window.location.assign(url);
+  }
+
+  // TASK_244 — the relay-down banner's "start again" is a real action, not a
+  // suggestion. Premium gets SpaceWorker's IP; free accounts get the first
+  // configured exit route (the same free alternative the private browser has).
+  const restartEgress: CloneEgressChoice | null = isPremium
+    ? "direct"
+    : cloneSetup?.exitNodes?.[0]
+      ? (`exit:${cloneSetup.exitNodes[0].id}` as CloneEgressChoice)
+      : null;
+  const restartLabel = restartEgress
+    ? `Start again with ${cloneEgressShort(restartEgress)}`
+    : null;
+
+  async function restartClone(cloneId: string) {
+    if (!restartEgress) return;
+    const row = clones.find((r) => r.id === cloneId) ?? null;
     setCloneError("");
     try {
-      // TASK_204 — clicking Open on a `ready` clone used to 404: the hosted
-      // session row (and its viewUrl) is only written by stepLaunch, and
-      // NOTHING was advancing `ready` after the one-shot driveCloneLifecycle
-      // bailed. So the click itself drives the pipeline: advance (which at
-      // `ready` = launch the browser) → poll → open once `active`.
-      // `launching` is safe to advance too: withCloneLock serialises this call
-      // behind the in-flight launch, which then sees `active`. We never advance
-      // earlier states here (IN_FLIGHT guard would fail a mid-transfer clone)
-      // — the button is disabled for those anyway (canOpenClone).
-      const row = clones.find((r) => r.id === cloneId) ?? null;
-      if (row && row.status !== "active" && canOpenClone(row.status)) {
-        await driveCloneLifecycle(cloneId);
-      }
-      const res = await fetch(`/api/clones/${cloneId}/session`);
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        // If we just drove a launch that the governor queued (202) or paused,
-        // say the honest thing rather than a generic "not ready".
-        const after = clones.find((r) => r.id === cloneId) ?? null;
-        const queued = after?.queuePosition !== null && after?.queuePosition !== undefined;
-        throw new Error(
-          queued
-            ? "The browser is waiting for a free slot — it starts on its own."
-            : "The session is not ready yet — try again in a moment.",
-        );
-      }
-      const url = typeof data.openUrl === "string" && data.openUrl ? data.openUrl : `/clone/${cloneId}`;
-      window.open(url, "_blank", "noopener");
+      // A stuck relay clone can never finish while the PC is away; clear it so
+      // the history does not keep a dead row beside the new one.
+      if (row && !isCloneTerminalStatus(row.status)) await revokeClone(cloneId);
+      setCloneEgress(restartEgress);
+      await startClone(restartEgress, { forceFresh: true });
     } catch (e) {
-      setCloneError(cleanErr(e instanceof Error ? e.message : "The session is not ready yet", "The session is not ready yet"));
-    } finally {
-      setCloneBusy("");
+      setCloneError(cleanErr(e instanceof Error ? e.message : "Could not start again", "Could not start again"));
     }
   }
 
@@ -1936,6 +1950,8 @@ export function DeviceConsole({
               onRevoke={revokeClone}
               onDelete={deleteClone}
               onOpen={openCloneSession}
+              onRestart={restartClone}
+              restartLabel={restartLabel}
             />
             )
           )}
@@ -2064,7 +2080,7 @@ function SummaryTab({
   lastClone: CloneRow | null;
   clonesLoaded: boolean;
   cloneBusy: string;
-  openCloneSession: (cloneId: string) => Promise<void>;
+  openCloneSession: (cloneId: string) => void;
   goToCloneTab: () => void;
   powerView: PowerView | null;
   goToCloneSetup: () => void;
@@ -2581,7 +2597,7 @@ function ScreenMonitoringCard({
   );
 }
 
-function CloneTab(props: { clones: CloneRow[]; loaded: boolean; err: string; msg: string; busy: string; browser: CloneBrowser; setBrowser: (b: CloneBrowser) => void; profile: string; setProfile: (v: string) => void; egress: CloneEgressChoice; setEgress: (e: CloneEgressChoice) => void; sessionMode: "fresh" | "live"; setSessionMode: (m: "fresh" | "live") => void; premium: boolean; premiumLoaded: boolean; setup: CloneSetupStatus | null; setupBusy: string; setupErr: string; setupSteps: CloneSetupStep[]; onSetup: (role: "source" | "hosted") => Promise<void>; onStart: () => Promise<void>; onStateSync: () => Promise<void>; stateSync: { ok: boolean; text: string } | null; onRevoke: (id: string) => Promise<void>; onDelete: (id: string) => Promise<void>; onOpen: (id: string) => Promise<void> }) {
+function CloneTab(props: { clones: CloneRow[]; loaded: boolean; err: string; msg: string; busy: string; browser: CloneBrowser; setBrowser: (b: CloneBrowser) => void; profile: string; setProfile: (v: string) => void; egress: CloneEgressChoice; setEgress: (e: CloneEgressChoice) => void; sessionMode: "fresh" | "live"; setSessionMode: (m: "fresh" | "live") => void; premium: boolean; premiumLoaded: boolean; setup: CloneSetupStatus | null; setupBusy: string; setupErr: string; setupSteps: CloneSetupStep[]; onSetup: (role: "source" | "hosted") => Promise<void>; onStart: () => Promise<void>; onStateSync: () => Promise<void>; stateSync: { ok: boolean; text: string } | null; onRevoke: (id: string) => Promise<void>; onDelete: (id: string) => Promise<void>; onOpen: (id: string) => void; onRestart: (id: string) => Promise<void>; restartLabel: string | null }) {
   const live = props.clones.find((r) => r.status === "active") ?? props.clones.find((r) => isCloneLiveStatus(r.status)) ?? null;
   // TASK_204 S4 — the user's OWN saved browser profiles, derived from their
   // clone history. `profileName` is per-job here (lib/clone.ts launches each
@@ -2610,7 +2626,7 @@ function CloneTab(props: { clones: CloneRow[]; loaded: boolean; err: string; msg
         latest={props.clones[0] ?? null}
       />
       {live ? (
-        <CloneLiveCard row={live} busy={props.busy} premium={props.premium} onOpen={props.onOpen} onRevoke={props.onRevoke} />
+        <CloneLiveCard row={live} busy={props.busy} onOpen={props.onOpen} onRevoke={props.onRevoke} onRestart={props.onRestart} restartLabel={props.restartLabel} />
       ) : (
         props.loaded && (
           <p className="rounded-lg border border-border bg-bg px-3 py-2 text-sm text-fg-muted">No live clone right now — start one above and follow each step here.</p>
@@ -2724,7 +2740,7 @@ function ProfileStateCard(props: {
   );
 }
 
-function CloneHistoryRow(props: { row: CloneRow; busy: string; onOpen: (id: string) => Promise<void>; onRevoke: (id: string) => Promise<void>; onDelete: (id: string) => Promise<void> }) {
+function CloneHistoryRow(props: { row: CloneRow; busy: string; onOpen: (id: string) => void; onRevoke: (id: string) => Promise<void>; onDelete: (id: string) => Promise<void> }) {
   const { row, busy, onOpen, onRevoke, onDelete } = props;
   const live = isCloneLiveStatus(row.status);
   const terminal = isCloneTerminalStatus(row.status) || row.terminal;
@@ -2785,9 +2801,10 @@ function CloneHistoryRow(props: { row: CloneRow; busy: string; onOpen: (id: stri
   );
 }
 
-function CloneLiveCard(props: { row: CloneRow; busy: string; premium: boolean; onOpen: (id: string) => Promise<void>; onRevoke: (id: string) => Promise<void> }) {
-  const { row, busy, premium, onOpen, onRevoke } = props;
+function CloneLiveCard(props: { row: CloneRow; busy: string; onOpen: (id: string) => void; onRevoke: (id: string) => Promise<void>; onRestart: (id: string) => Promise<void>; restartLabel: string | null }) {
+  const { row, busy, onOpen, onRevoke, onRestart, restartLabel } = props;
   const relayDown = row.egressMode === "relay" && row.relay !== null && row.relay.status !== "up";
+  const sourceOffline = row.egressMode === "relay" && row.source !== null && !row.source.online;
   const idleShorter = row.idleRemainingMs !== null && row.idleRemainingMs < (row.ttlRemainingMs ?? Number.MAX_SAFE_INTEGER);
   const queueLine = cloneQueueLine(row);
   return (
@@ -2815,11 +2832,23 @@ function CloneLiveCard(props: { row: CloneRow; busy: string; premium: boolean; o
           {row.relay.lastCheckAt ? ` · checked ${relTime(row.relay.lastCheckAt)}` : ""}
         </p>
       )}
-      {relayDown && (
-        <p className="mt-1.5 rounded-lg border border-amber-500/40 bg-amber-500/5 px-2 py-1.5 text-xs text-fg">
-          The relay on your PC is down, so this clone cannot proceed safely.
-          {premium ? " You can also start again with SpaceWorker's IP." : ""}
-        </p>
+      {(relayDown || sourceOffline) && (
+        <div className="mt-1.5 rounded-lg border border-amber-500/40 bg-amber-500/5 px-2 py-1.5 text-xs text-fg">
+          <p>
+            {sourceOffline
+              ? "Your PC is offline, so this relay clone cannot proceed safely."
+              : "The relay on your PC is down, so this clone cannot proceed safely."}
+          </p>
+          {restartLabel && (
+            <button
+              onClick={() => onRestart(row.id)}
+              disabled={busy !== ""}
+              className="mt-1.5 rounded-lg border border-brand-600/60 bg-brand-600/10 px-2.5 py-1 text-xs font-semibold text-brand-600 transition-colors hover:bg-brand-600/20 disabled:opacity-50"
+            >
+              {busy === "start" ? "Starting…" : restartLabel}
+            </button>
+          )}
+        </div>
       )}
       <div className="mt-2 flex flex-wrap gap-2">
         <button
@@ -3152,7 +3181,10 @@ function CloneStartCard(props: { browser: CloneBrowser; setBrowser: (b: CloneBro
           reported only AFTER clicking Start, as a 409 whose copy talked about
           egress. Name the real blocker here, and point at the exact button in the
           Device setup card above — nothing is installed by hand. */}
-      {setup !== null && (!setup.hostedAvailable || !setup.online || (egress === "relay" && !setup.sourceReady)) && (
+      {setup !== null &&
+        (!setup.hostedAvailable ||
+          (egress === "relay" && (!setup.online || !setup.sourceReady)) ||
+          (egress !== "relay" && sessionMode === "live" && !setup.online)) && (
         <ul className="mt-2 space-y-1 rounded-lg border border-amber-500/40 bg-amber-500/5 px-2.5 py-2 text-xs text-fg">
           {!setup.hostedAvailable && (
             <li>
@@ -3197,10 +3229,16 @@ function CloneStartCard(props: { browser: CloneBrowser; setBrowser: (b: CloneBro
               )}
             </li>
           )}
-          {!setup.online && (
+          {egress === "relay" && !setup.online && (
             <li>
-              <span className="font-medium">This PC is offline.</span> Bring it online — its profile is
-              captured live each time.
+              <span className="font-medium">This PC is offline.</span> “Same IP as your PC” needs the relay on
+              this PC — bring it online, or switch to SpaceWorker&apos;s IP / an exit route.
+            </li>
+          )}
+          {egress !== "relay" && sessionMode === "live" && !setup.online && (
+            <li>
+              <span className="font-medium">This PC is offline.</span> A saved session lets the clone run
+              without it; if none is saved yet, connect this PC once so the sign-ins can be carried.
             </li>
           )}
           {egress === "relay" && !setup.sourceReady && (

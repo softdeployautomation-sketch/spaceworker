@@ -46,7 +46,11 @@ export async function GET(
       },
     });
     // Belt-and-braces: the row, when present, must belong to this user too.
-    if (!row || row.userId !== session.userId) {
+    // TASK_244 — a MISSING row is not an error: the clone exists and is still
+    // in `requested`/`ready`/`launching`, so the session window needs the
+    // status to show its waiting screen and drive the next step. Only a
+    // cross-user row is a 404.
+    if (row && row.userId !== session.userId) {
       return NextResponse.json({ error: "not_found", reason: "No such clone." }, { status: 404 });
     }
 
@@ -54,7 +58,7 @@ export async function GET(
     // session read so the 15 s window poll can never let it expire mid-use.
     // The hard TTL still caps the session.
     let idleExpiresAt: string | null = clone.idleExpiresAt;
-    if (clone.status === "active" && row.status === "running") {
+    if (clone.status === "active" && row?.status === "running") {
       const settings = await getCloneSettings();
       const now = new Date();
       const next = new Date(now.getTime() + settings.idleTtlMinutes * 60_000);
@@ -73,16 +77,18 @@ export async function GET(
       status: clone.status,
       // The hosted-session open URL (stamped at launch). Null until the launch
       // step stamps it — the window shows a loading state meanwhile (TASK_111).
-      openUrl: row.viewUrl,
-      session: {
-        id: row.id,
-        status: row.status,
-        egressMode: row.egressMode,
-        startedAt: row.startedAt.toISOString(),
-        lastUsedAt: row.lastUsedAt?.toISOString() ?? null,
-        stoppedAt: row.stoppedAt?.toISOString() ?? null,
-        expiresAt: row.expiresAt?.toISOString() ?? null,
-      },
+      openUrl: row?.viewUrl ?? null,
+      session: row
+        ? {
+            id: row.id,
+            status: row.status,
+            egressMode: row.egressMode,
+            startedAt: row.startedAt.toISOString(),
+            lastUsedAt: row.lastUsedAt?.toISOString() ?? null,
+            stoppedAt: row.stoppedAt?.toISOString() ?? null,
+            expiresAt: row.expiresAt?.toISOString() ?? null,
+          }
+        : null,
       display: {
         browser: clone.browser,
         profileName: clone.profileName,

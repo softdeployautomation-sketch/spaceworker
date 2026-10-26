@@ -4,62 +4,104 @@ import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// TASK_204 — the "Open session" button was unclickable: it required
-// `status === "active"` on the CLIENT while the hosted session row only
-// exists after stepLaunch — and nothing drove `ready` → launch, so clones
-// sat on "Almost ready" (cookies already injected) forever.
+import { canOpenClone, cloneOpenTitle, shouldDriveSession } from "../lib/clone-open";
+
+// TASK_204/TASK_244 — "Open session" was both unclickable (a `requested`
+// clone never advanced) and, when it was clickable, silently blocked: the
+// handler awaited the lifecycle drive and a `/session` fetch before calling
+// `window.open`, so browsers saw it outside the click and showed the pop-up
+// prompt. The click now navigates synchronously to `/clone/<id>`; that page
+// owns the drive. These assertions pin the split, plus the requested-heal.
 //
-// WHY THIS FILE EXISTS: the fix is behavioural wiring inside a 3.3k-line
-// client component that has no render harness in this repo, so per the house
-// pattern (tests/device-idle-chip.test.ts) we pin the REAL component source:
-// the gate must accept `ready`/`launching`, the click must drive the
-// lifecycle BEFORE opening, the poll must self-heal stalled rows once, and
-// the profile combobox must be wired to the account's own profile names.
+// The component has no render harness, so per the house pattern
+// (tests/device-idle-chip.test.ts) we pin the REAL source, and test the REAL
+// `lib/clone-open.ts` module directly.
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SRC = readFileSync(join(HERE, "..", "components", "device-console.tsx"), "utf8");
+const SESSION_SRC = readFileSync(join(HERE, "..", "components", "clone-session-view.tsx"), "utf8");
 
-test("TASK_204: canOpenClone admits ready/launching/active — the cookie'd clone is clickable", () => {
-  const fn = SRC.match(/function canOpenClone\(status: string\): boolean \{\s*return ([^;]+);/);
-  assert.ok(fn, "canOpenClone must exist");
-  const expr = fn![1];
-  for (const s of ["active", "ready", "launching"]) {
-    assert.ok(expr.includes(`"${s}"`), `canOpenClone must accept "${s}"`);
+test("TASK_244: requested is openable; mid-capture and terminal states are not", () => {
+  for (const s of ["requested", "ready", "launching", "active"]) {
+    assert.equal(canOpenClone(s), true, `${s} must be openable`);
   }
-  // Neither button may keep the old hard `!== "active"` gate.
+  for (const s of ["awaiting_source", "capturing", "transferred", "failed", "revoked", "expired_idle"]) {
+    assert.equal(canOpenClone(s), false, `${s} must not be openable`);
+  }
+  assert.match(cloneOpenTitle("requested"), /starts as soon as your PC/i);
+});
+
+test("TASK_244: only the safe states drive from the session window", () => {
+  for (const s of ["requested", "ready", "launching"]) {
+    assert.equal(shouldDriveSession(s), true, `${s} must drive from the session window`);
+  }
+  for (const s of ["active", "awaiting_source", "capturing", "failed"]) {
+    assert.equal(shouldDriveSession(s), false, `${s} must never drive from the session window`);
+  }
+});
+
+test("TASK_244: Open navigates synchronously — no await before window.open", () => {
+  const fn = SRC.match(/function openCloneSession\(cloneId: string\) \{[\s\S]*?\n  \}/);
+  assert.ok(fn, "openCloneSession must exist");
+  const body = fn![0];
+  assert.ok(!/async function openCloneSession/.test(body), "openCloneSession must not be async");
+  assert.ok(!/\bawait\b/.test(body), "openCloneSession must not await — that is what blocked the tab");
+  const openAt = body.indexOf("window.open(");
+  assert.ok(openAt !== -1, "the click must call window.open");
   assert.ok(
-    !SRC.includes('disabled={row.status !== "active"'),
-    "no Open button may hard-require status === active",
+    body.indexOf("`/clone/${cloneId}`") !== -1,
+    "the click must open the session window (/clone/<id>)",
+  );
+  assert.ok(
+    body.indexOf("window.location.assign(url)") > openAt,
+    "a blocked popup must fall back to same-tab navigation",
+  );
+  // The old silent bug: window.open after the awaits.
+  assert.ok(
+    !SRC.includes('window.open(url, "_blank", "noopener")'),
+    "no Open path may window.open after awaiting",
   );
 });
 
-test("TASK_204: openCloneSession drives the lifecycle before opening the session", () => {
-  const body = SRC.match(/async function openCloneSession\(cloneId: string\) \{[\s\S]*?\n  \}/);
-  assert.ok(body, "openCloneSession must exist");
-  const b = body![0];
-  const drive = b.indexOf("driveCloneLifecycle(cloneId)");
-  const get = b.indexOf('fetch(`/api/clones/${cloneId}/session`)');
-  assert.ok(drive !== -1, "the click must drive the lifecycle (advance → launch)");
-  assert.ok(get !== -1, "the click must still open the session route");
-  assert.ok(drive < get, "the launch must be driven BEFORE the session fetch");
+test("TASK_244: the session window drives requested/ready/launching itself", () => {
   assert.ok(
-    b.includes("canOpenClone(row.status)"),
-    "driving must be gated to launchable states — never mid-transfer clones",
+    SESSION_SRC.includes("shouldDriveSession(payload.status)"),
+    "the session page must gate the drive on the shared helper",
+  );
+  assert.ok(
+    SESSION_SRC.includes("`/api/clones/${cloneId}/advance`"),
+    "the session page must POST advance",
+  );
+  assert.ok(
+    SESSION_SRC.includes("advBody.advanced !== true"),
+    "the drive loop must stop when a step makes no progress",
+  );
+  assert.ok(
+    SESSION_SRC.includes("waitingOnPc"),
+    "the waiting screen must say when it is waiting on the PC",
   );
 });
 
-test("TASK_204: the poll self-heals a stalled ready clone exactly once per id", () => {
+test("TASK_244: the console poll retries a requested clone on a throttle", () => {
+  assert.ok(
+    SRC.includes('const stalledRequested = r.status === "requested"'),
+    "the heal must target requested rows",
+  );
+  assert.ok(
+    SRC.includes("Date.now() - lastKick < 20_000"),
+    "requested retries must be throttled, not fired every render",
+  );
+  assert.ok(
+    SRC.includes("requestedKickRef.current.set(r.id, Date.now())"),
+    "the requested throttle must record the kick time",
+  );
   assert.ok(
     SRC.includes("healKickedRef.current.add(r.id)"),
-    "the self-heal must dedupe through healKickedRef so a row is kicked once",
+    "ready/launching must keep the one-shot dedupe",
   );
   assert.ok(
     SRC.includes('const stalledReady = r.status === "ready"'),
-    "the heal must target rows parked at ready",
-  );
-  assert.ok(
-    /stalledLaunch[\s\S]{0,120}status === "launching"/.test(SRC),
-    "a launch dead for 3 minutes must also be re-kicked",
+    "the ready self-heal must stay",
   );
   assert.ok(
     SRC.includes("if (r.session) continue;"),

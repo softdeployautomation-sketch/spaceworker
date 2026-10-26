@@ -132,6 +132,29 @@ test("TASK_238 — the hosted destination is judged by the same rule", async () 
   assert.equal(availability.pickedDeviceId, "hosted-1");
 });
 
+test("TASK_244 — the hosted destination is not aged out by a missing heartbeat", async () => {
+  hostRows = [];
+  hostedRows = [
+    host({
+      id: "hosted-1",
+      name: "SpaceWorker browser",
+      deviceKind: "hosted",
+      status: "online",
+      // The hosted row has no agent by design, so both freshness anchors can be
+      // stale/empty while the browser is perfectly usable. It must still be
+      // picked — otherwise the card says "hosted PC offline" and hostedAvailable
+      // is false even though launches on it succeed.
+      lastSeenAt: new Date(Date.now() - 30 * 24 * HOUR),
+      onlineConfirmedAt: null,
+    }),
+  ];
+
+  const availability = await hosts.hostAvailability({ userId: "u1", excludeDeviceId: "source" });
+  assert.equal(availability.available, true);
+  assert.equal(availability.pickedDeviceId, "hosted-1");
+  assert.deepEqual(availability.offlineHostNames, []);
+});
+
 test("TASK_238 — the gate and the selector cannot disagree across the matrix", async () => {
   const shapes: Array<Partial<DeviceRow>> = [
     { status: "online", lastSeenAt: null, onlineConfirmedAt: new Date() },
