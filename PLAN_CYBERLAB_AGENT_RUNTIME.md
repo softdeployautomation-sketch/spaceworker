@@ -1,6 +1,6 @@
 # PLAN — Cyber Lab Agent Runtime (Cline Core SDK)
 
-Status: **ACT — P0/P1/P2/P3 complete, P4 in progress**  
+Status: **ACT — P0/P1/P2/P3/P4 complete, deployed**  
 Date: 2026-10-27  
 Reconstructs Cyber Lab as a real, agent-controlled offensive security lab leveraging Cline Core SDK (not building a custom agent).
 
@@ -159,7 +159,13 @@ All phases P0–P3 are complete. Cyber Lab agent runtime is ready for production
 - P4.3 Dynamic free models endpoint: DONE
 - P4.4 Settings card (login status, model dropdown, logout): DONE
 - P4.5 cline-agent.ts changes: DONE — fixed range scope, type mismatches, TSC clean
-- P4.6 Commit + push + deploy: TODO
+- P4.7 Fix login auto-connect (in progress → DONE)
+- Added loginPending state + auto-polling of /api/clin/auth/me so connection updates without manual refresh
+- Added confirmLogin() that calls /api/clin/auth/callback with deviceCode
+- Model field changed from manual Input to <select> dropdown populated from /api/clin/models/free (live models, no typing)
+- Auth status now shows email when connected
+- Added "Complete Cline Login" pending UI with verification URI + user code + confirm/cancel buttons
+- handleLogout now stops polling and clears pending state
 
 ### Goal
 Users login to Cline free tier (email-verified OAuth, same flow as Cline extension), get free model access with 2 accounts/day limit, can logout and switch accounts. MCP server on SpaceWorker lets Cline connect to Cyber Lab tools. Free models load dynamically from Cline — no manual typing.

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import { Button, Card, Input, Label, Select } from "@/components/ui";
+import { Button, Card, Input, Label } from "@/components/ui";
 
 interface ClineSettings {
   clineModelId: string | null;
@@ -39,6 +39,10 @@ export function ClineSettingsCard() {
   const [auth, setAuth] = useState<ClineAuth | null>(null);
   const [freeModels, setFreeModels] = useState<FreeModel[]>([]);
   const [loadingFree, setLoadingFree] = useState(false);
+  const [loginPending, setLoginPending] = useState<{ deviceCode: string; userCode: string; verificationUri: string; pollIntervalSeconds: number } | null>(null);
+  const [connecting, setConnecting] = useState(false);
+  const [pollTimer, setPollTimer] = useState<ReturnType<typeof setInterval> | null>(null);
+
 
   const loadSettings = useCallback(async () => {
     try {
@@ -130,8 +134,30 @@ export function ClineSettingsCard() {
     }
   }, [apiKey, modelId, apiEndpoint, loadSettings, loadAuth]);
 
+  const startPolling = (deviceCode: string, intervalMs: number) => {
+    if (pollTimer) clearInterval(pollTimer);
+    const timer = setInterval(async () => {
+      await loadAuth();
+      if (auth?.connected) {
+        clearInterval(timer);
+        setPollTimer(null);
+        setLoginPending(null);
+        setError("");
+      }
+    }, intervalMs);
+    setPollTimer(timer);
+  };
+
+  const stopPolling = () => {
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      setPollTimer(null);
+    }
+  };
+
   const handleLogin = async () => {
     setError("");
+    stopPolling();
     try {
       const res = await fetch("/api/clin/auth/login", { method: "POST" });
       if (!res.ok) {
@@ -145,16 +171,49 @@ export function ClineSettingsCard() {
         await loadAuth();
         return;
       }
-      setError(
-        `Cline device auth started. User code: ${data.userCode}. Visit ${data.verificationUri} to complete login.`,
-      );
+      setLoginPending({
+        deviceCode: data.deviceCode,
+        userCode: data.userCode,
+        verificationUri: data.verificationUri,
+        pollIntervalSeconds: data.pollIntervalSeconds ?? 5,
+      });
+      // Start auto-polling so connection updates without manual refresh
+      startPolling(data.deviceCode, (data.pollIntervalSeconds ?? 5) * 1000);
     } catch (err) {
       setError(err instanceof Error ? err.message : "login_failed");
     }
   };
 
+  const confirmLogin = async (deviceCode: string) => {
+    setError("");
+    setConnecting(true);
+    try {
+      const res = await fetch("/api/clin/auth/callback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ deviceCode }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        setError(err.error || "Failed to confirm login");
+        setConnecting(false);
+        return;
+      }
+      await loadAuth();
+      setConnecting(false);
+      stopPolling();
+      setLoginPending(null);
+      setSaved(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "confirm_failed");
+      setConnecting(false);
+    }
+  };
+
   const handleLogout = async () => {
     setError("");
+    stopPolling();
+    setLoginPending(null);
     try {
       const res = await fetch("/api/clin/auth/logout", { method: "POST" });
       if (!res.ok) {
@@ -188,7 +247,7 @@ export function ClineSettingsCard() {
             <h3 className="text-sm font-medium text-fg">Cline Account</h3>
             <p className="text-xs text-fg-muted">
               {auth?.connected
-                ? "Connected via Cline OAuth (free tier)"
+                ? `Connected via Cline OAuth (free tier)${auth.email ? ` — ${auth.email}` : ""}`
                 : "Not connected — manual API key required"}
             </p>
           </div>
@@ -235,6 +294,28 @@ export function ClineSettingsCard() {
         )}
       </div>
 
+      {/* Login pending: waiting for user to complete device auth */}
+      {loginPending && (
+        <div className="mb-6 p-4 rounded-lg border border-blue-500/50 bg-blue-500/10">
+          <h3 className="text-sm font-medium text-fg">Complete Cline Login</h3>
+          <p className="mt-1 text-sm text-fg">
+            1. Visit:{" "}
+            <span className="font-mono text-xs break-all text-fg">{loginPending.verificationUri}</span><br />
+            2. Enter code:{" "}
+            <span className="font-mono text-xs font-bold text-blue-600">{loginPending.userCode}</span>
+          </p>
+          <p className="mt-2 text-xs text-fg-muted">
+            After verifying on Cline, click "Confirm Connected" to auto-connect. The page will also poll automatically every {loginPending.pollIntervalSeconds}s.
+          </p>
+          <div className="mt-4 flex gap-2">
+            <Button onClick={() => confirmLogin(loginPending.deviceCode)} disabled={connecting}>
+              {connecting ? "Confirming…" : "Confirm Connected"}
+            </Button>
+            <Button variant="ghost" onClick={() => { stopPolling(); setLoginPending(null); }}>Cancel</Button>
+          </div>
+        </div>
+      )}
+
       {/* Settings form */}
       <div className="grid gap-4 md:grid-cols-3">
         <div className="flex flex-col gap-2">
@@ -252,13 +333,15 @@ export function ClineSettingsCard() {
         </div>
         <div className="flex flex-col gap-2">
           <Label>Model</Label>
-          <Input
-            value={modelId}
-            onChange={(e) => setModelId(e.target.value)}
-            placeholder="claude-sonnet-4-6"
-            className="w-full"
-          />
-          <p className="text-xs text-fg-muted">Cline free-tier model id</p>
+          <select value={modelId} onChange={(e) => setModelId(e.target.value)} className="w-full border rounded px-2 py-1 text-sm">
+            <option value="">Select a free model…</option>
+            {freeModels.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name} ({m.id}) — {m.tags.join(", ")}
+              </option>
+            ))}
+          </select>
+          <p className="text-xs text-fg-muted">Cline free-tier model (loaded live)</p>
         </div>
         <div className="flex flex-col gap-2">
           <Label>Endpoint (optional)</Label>
