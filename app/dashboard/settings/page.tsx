@@ -18,6 +18,7 @@ import { LicensesSection } from "./licenses-section";
 import { SendRegionSettings } from "@/components/send-region-settings";
 import { HostingCredentialsSettings } from "@/components/hosting-credentials-settings";
 import { ReferralLinkCard } from "@/components/referral-link-card";
+import { ClineSettingsCard } from "@/components/cline-settings-card";
 
 export const metadata: Metadata = { title: "Settings" };
 
@@ -279,6 +280,12 @@ export default async function SettingsPage() {
           </div>
           <Badge tone="neutral">Coming soon</Badge>
         </div>
+      </Card>
+      )}
+
+      {!wrapper && (
+      <Card className="max-w-2xl p-6">
+        <ClineSettingsCard />
       </Card>
       )}
 

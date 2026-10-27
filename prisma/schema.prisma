@@ -4041,3 +4041,78 @@ model AuditFinding {
   @@index([verdict])
 }
 
+// ============================================================================
+// Cyber Lab Agent Runtime — Cline Core SDK (PLAN_CYBERLAB_AGENT_RUNTIME.md)
+// Purely additive: new tables only, no existing table modified.
+// ============================================================================
+
+// Per-user Cline auth + model configuration. Encrypted fields never leave the
+// server; only hashes / masked values are ever returned to the client.
+model CyberLabAgentSettings {
+  id                 String   @id @default(cuid())
+  userId             String   @unique
+  // Encrypted Cline API key / OAuth access token (user-provided, free tier).
+  clineApiKeyEnc     String?
+  clineOAuthTokenEnc String?
+  clineRefreshTokenEnc String?
+  // Model + endpoint the Cline session should use (free tier default or custom).
+  clineModelId       String?
+  clineApiEndpoint   String?
+  updatedAt          DateTime @updatedAt
+
+  @@index([userId])
+}
+
+// One agent session per lab run. Status drives the idle sweep + kill switch.
+model CyberLabAgentSession {
+  id             String   @id @default(cuid())
+  userId         String
+  companyId      String?
+  status         String   @default("pending") // pending | active | idle | stopped | failed
+  modelProvider  String   @default("cline")   // cline (free tier) | external
+  modelId        String
+  apiEndpoint    String?
+  // Hash only — never the raw key.
+  apiKeyHash     String?
+  cwd            String?
+  startedAt      DateTime @default(now())
+  lastActivityAt DateTime @default(now())
+  idleShutdownAt DateTime?
+  contextDocPath String?
+  stopReason     String?
+  frozenByAdmin  Boolean  @default(false)
+
+  @@index([userId, status])
+  @@index([companyId])
+}
+
+// Append-only context doc steps: every agent step records model/key version
+// so changing models or API keys never loses history.
+model CyberLabContextDocStep {
+  id             String   @id @default(cuid())
+  sessionId      String
+  stepNo         Int
+  modelProvider  String
+  modelId        String
+  apiEndpoint    String?
+  summary        String
+  // Path to the appended doc chunk on disk (under cyberlab-contexts/).
+  contentRef     String
+  createdAt      DateTime @default(now())
+
+  @@index([sessionId, stepNo])
+}
+
+// Admin kill switch: global or per-tenant freeze of agent sessions.
+model CyberLabKillSwitch {
+  id        String   @id @default(cuid())
+  scope     String   @default("global") // global | tenant
+  targetId  String?  // userId or companyId when scope=tenant
+  frozen    Boolean  @default(false)
+  reason    String?
+  setBy     String   // admin userId
+  setAt     DateTime @default(now())
+
+  @@index([scope, targetId])
+}
+

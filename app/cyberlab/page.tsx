@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 
 import { CyberLabOpsConsole } from "@/components/cyberlab-ops-console";
+import { CyberLabAgentConsole } from "@/components/cyberlab-agent-console";
 import { getSession } from "@/lib/auth";
 
 export const metadata: Metadata = { title: "Cyber Lab — Operation Console — SpaceWorker OS" };
@@ -29,5 +30,10 @@ export const dynamic = "force-dynamic";
 export default async function CyberLabSectionPage() {
   const session = await getSession();
   if (!session) redirect("/"); // hidden-login: unauth → public clown page
-  return <CyberLabOpsConsole />;
+  return (
+    <div className="flex flex-col h-full gap-4 p-4">
+      <CyberLabOpsConsole />
+      <CyberLabAgentConsole />
+    </div>
+  );
 }
