@@ -629,6 +629,7 @@ export async function cancelQueuedCommand(opts: {
 export interface RunNowResult {
   output: string | null;
   ranAt: Date;
+  exitCode: number;
 }
 
 export interface PingResult {
@@ -1022,6 +1023,28 @@ export async function moveAgentToPrivateOrg(opts: {
   );
 }
 
+// TASK_236 — step 2 (VERIFY) of install→verify→remove.
+// Read-only: asks Vantra whether the device has re-appeared under the PRIVATE
+// companion org yet (hostname match against the private client's agent list).
+export interface VerifyMoveToPrivateResult {
+  ok: boolean;
+  reason?: string;
+  verified?: boolean;
+  privateAgentId?: string;
+  hostname?: string;
+}
+
+export async function verifyMoveToPrivate(opts: {
+  userId: string;
+  deviceId: string;
+}): Promise<VerifyMoveToPrivateResult> {
+  const device = await requireOwnedDevice(opts);
+  return vantraFetch<VerifyMoveToPrivateResult>(
+    `/api/internal/sw/devices/${encodeURIComponent(device.vantraAgentId)}/move-verify`,
+    { method: "POST" },
+  );
+}
+
 export async function runCommandNow(opts: {
   userId: string;
   deviceId: string;
@@ -1029,6 +1052,7 @@ export async function runCommandNow(opts: {
   shell: string;
   timeoutSeconds: number;
   runAsUser: boolean;
+  captureOutput?: boolean;
 }): Promise<RunNowResult> {
   const device = await requireOwnedDevice(opts);
   const cmd = opts.cmd.trim();
@@ -1065,7 +1089,7 @@ export async function runCommandNow(opts: {
       sourceDeviceId: device.id,
       detail: { shell, timeoutSeconds, output: output?.slice(0, 2000) ?? null },
     });
-    return { output: output ?? null, ranAt: new Date() };
+    return { output: output ?? null, ranAt: new Date(), exitCode: 0 };
   } catch (err) {
     await recordAgentActionAudit({
       userId: opts.userId,
