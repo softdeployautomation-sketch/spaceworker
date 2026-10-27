@@ -118,16 +118,23 @@ Eight abandoned attempts, zero completions.
 | B5 | `lib/lab/cline-agent.ts` OAuth wiring | DONE | `request > decrypted OAuth > manual`; start+resume; resume now sends SDK `providerId:"cline"` (was our `cline-free` label) |
 | B6 | Tests | DONE | 3 new files + TASK_246 cases in the spike test; 48/48 targeted pass |
 | B7 | Gates (tsc / targeted / full / eslint) | DONE | tsc clean · targeted 48/48 · full 1846 pass / 17 fail / 1 skip — **all 17 fail on HEAD too** (proved in a clean worktree: 11 in 5 files + 6 in `task-236-safe-move`) · eslint: new/changed files clean; `cline-agent.ts` has 2 pre-existing `require()` errors (8→6 problems vs HEAD) |
-| B8 | Docs + commit + deploy + live verify | IN PROGRESS | |
+| B8 | Docs + commit + deploy + live verify | IN PROGRESS | Branch `agent/task-246`, commit `3d0aac4`; `/Users/mikeolab/sw-vbsfix` no longer exists, so main merge happens in `/Users/mikeolab/spaceworker` (already on `main`, HEAD == `origin/main` at `ce7373f`) |
 
 ---
 
 ## 4. AFTER (fill after each batch; final post-deploy proof at the end)
 
-- [ ] Local gates: `npx tsc --noEmit` → (record)
-- [ ] Targeted tests → (record)
-- [ ] Full `npm test` → (record vs floor 1682 pass / 0 fail / 1 skip)
-- [ ] eslint touched files → (record)
+- [x] Local gates: `npx tsc --noEmit` → **clean (no output)**
+- [x] Targeted tests → **48/48 pass** (`clin-token-crypto` 9, `clin-device-auth` 11,
+      `clin-auth-routes` 8, `cline-agent-spike` 20 incl. 4 TASK_246 cases)
+- [x] Full `npm test` → **1846 pass / 17 fail / 1 skip** (1787 subtests). The prompt's
+      1682 floor is stale. All 17 failures are **pre-existing**: re-ran the same files in a
+      clean `git worktree` at HEAD `ce7373f` — 11 fail there (`admin-device-purge`,
+      `task-227-new-device-notification`, `task-234-move-capture`,
+      `task-238-device-online-confirmed`, `vantra-link-installer`) + 6 in
+      `task-236-safe-move`. Zero new failures.
+- [x] eslint new/changed files → **clean**; `lib/lab/cline-agent.ts` still reports the same
+      2 pre-existing `require()` errors (8 problems at HEAD → 6 now), no new findings.
 - [ ] BUILD_ID old `naydyU-c0cCO2MR88h__b` → new (record)
 - [ ] `grep -rl "api.cline.com" .next/server` → 0
 - [ ] Deployed chunk sourcesContent has `https://api.cline.bot`
