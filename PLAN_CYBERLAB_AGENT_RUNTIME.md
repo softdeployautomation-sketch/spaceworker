@@ -159,7 +159,10 @@ All phases P0–P3 are complete. Cyber Lab agent runtime is ready for production
 - P4.3 Dynamic free models endpoint: DONE
 - P4.4 Settings card (login status, model dropdown, logout): DONE
 - P4.5 cline-agent.ts changes: DONE — fixed range scope, type mismatches, TSC clean
-- P4.7 Fix login auto-connect → DONE
+- P4.7 Fix login auto-connect → DONE (verified: TSC clean, 16/16 spike tests pass)
+  - settings card: startPolling now calls /api/clin/auth/callback actively (not just loadAuth); on success → auto-connect, stop polling; on expired/invalid → auto-restart login
+  - settings card: useEffect cleanup clears poll timer on unmount
+  - callback route: idempotent (returns ok if already connected); expiresInSeconds 300→15 (short poll window); catch block returns 202 for pending instead of 500
 - Removed daily usage counter (0/2, remaining 2) from UI, login route, callback route, me route, and cline-agent.ts
 - Auth now shows Cline account email + account ID (decrypted from stored OAuth token) instead of daily usage
 - confirmLogin now parses response body before checking res.ok (avoids double-read crash)

@@ -133,16 +133,38 @@ export function ClineSettingsCard() {
   const startPolling = (deviceCode: string, intervalMs: number) => {
     if (pollTimer) clearInterval(pollTimer);
     const timer = setInterval(async () => {
-      await loadAuth();
-      if (auth?.connected) {
-        clearInterval(timer);
-        setPollTimer(null);
-        setLoginPending(null);
-        setError("");
+      try {
+        const res = await fetch("/api/clin/auth/callback", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ deviceCode }),
+        });
+        const data = await res.json();
+        if (res.ok) {
+          clearInterval(timer);
+          setPollTimer(null);
+          setLoginPending(null);
+          setError("");
+          await loadAuth();
+        } else if (/expired|invalid|already used/i.test(data.error || "")) {
+          clearInterval(timer);
+          setPollTimer(null);
+          setLoginPending(null);
+          setError("");
+          await handleLogin();
+        }
+      } catch {
+        // keep polling
       }
     }, intervalMs);
     setPollTimer(timer);
   };
+
+  useEffect(() => {
+    return () => {
+      if (pollTimer) clearInterval(pollTimer);
+    };
+  }, [pollTimer]);
 
   const stopPolling = () => {
     if (pollTimer) {

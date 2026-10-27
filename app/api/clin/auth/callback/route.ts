@@ -37,6 +37,16 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "deviceCode required" }, { status: 400 });
   }
 
+  // Idempotent: if tokens already stored for this user, auth is already complete
+  const existing = await db.cyberLabAgentSettings.findUnique({
+    where: { userId: user.id },
+    select: { clineOAuthTokenEnc: true },
+  });
+  if (existing?.clineOAuthTokenEnc) {
+    await db.clineDeviceAuth.delete({ where: { deviceCode } }).catch(() => {});
+    return NextResponse.json({ ok: true, message: "Cline account already connected" });
+  }
+
   // Look up the device code mapping to confirm this user initiated the flow
   const deviceAuth = await db.clineDeviceAuth.findUnique({
     where: { deviceCode },
@@ -53,7 +63,7 @@ export async function POST(req: Request) {
     // Poll for completion (bounded — will resolve when user completes auth or timeout)
     const credentials = await completeClineDeviceAuth({
       deviceCode,
-      expiresInSeconds: 300, // 5 min max poll
+      expiresInSeconds: 15, // short poll window; frontend retries
       pollIntervalSeconds: 5,
       apiBaseUrl: CLINE_API_BASE_URL,
     });
@@ -83,9 +93,10 @@ export async function POST(req: Request) {
       message: "Cline account connected successfully",
     });
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Failed to complete Cline device auth" },
-      { status: 500 },
-    );
+    const msg = err instanceof Error ? err.message : "Failed to complete Cline device auth";
+    if (/timeout|timed out|pending|not yet/i.test(msg)) {
+      return NextResponse.json({ error: "Still pending - complete verification on Cline", pending: true }, { status: 202 });
+    }
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
