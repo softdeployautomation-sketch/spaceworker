@@ -38,7 +38,19 @@ const nextConfig: NextConfig = {
   // actual install dir and the worker script is found. Verified against the live
   // box: `/ROOT` was absent and `node_modules/tesseract.js/src/worker/node` was
   // present.
-  serverExternalPackages: ["bcrypt", "@prisma/client", "tesseract.js"],
+  serverExternalPackages: [
+    "bcrypt",
+    "@prisma/client",
+    "tesseract.js",
+    // @cline/* packages are Node-only server SDKs (Cline Core). Next.js must NOT
+    // bundle them — @cline/llms ships a browser build missing exports, and the
+    // Cline SDK expects real Node require() resolution for its nested deps.
+    "@cline/sdk",
+    "@cline/core",
+    "@cline/llms",
+    "@cline/agents",
+    "@cline/shared",
+  ],
   // Pin the workspace root explicitly — an unrelated package.json in the parent
   // home directory otherwise confuses Turbopack's root inference, causing bogus
   // "/ROOT/..." module resolution errors that abort the production build.
