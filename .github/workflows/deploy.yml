@@ -329,6 +329,13 @@ jobs:
             chown -R trmm:trmm /opt/spaceworker
             rm -f /tmp/spaceworker-ci-deploy.tar.gz
             npm rebuild || true
+            # Recover from a previously FAILED migration: Prisma blocks all new
+            # migrations when one is stuck in "failed" state. Mark it rolled-back
+            # so migrate deploy can re-apply it (and any later pending ones).
+            # This is safe: the migration runs inside a transaction, so a failure
+            # leaves the DB untouched — only the _prisma_migrations record needs
+            # clearing. See https://pris.ly/d/migrate-resolve
+            sudo -u trmm npx prisma migrate resolve --rolled-back 20261129000000_task_cyberlab_bug_hunter_tools || true
             sudo -u trmm npx prisma migrate deploy
             # Restart the two services every request actually depends on
             # BEFORE touching the Python worker at all. 2026-09-25 (live
