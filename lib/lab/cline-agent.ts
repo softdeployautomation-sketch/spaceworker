@@ -237,22 +237,6 @@ export async function startClineLabSession(input: StartSessionInput): Promise<St
     return { sessionId: "", status: "failed", message: "Your Cyber Lab agent session is frozen by admin." };
   }
 
-  // Daily free-account limit check for cline-free provider (2 accounts/day) —
-  // fail fast BEFORE creating any LabRange or session resources.
-  if (input.providerId === "cline-free") {
-    const today = new Date().toISOString().slice(0, 10);
-    const usage = await _db().clineFreeUsage.findUnique({
-      where: { userId_date: { userId: input.userId, date: today } },
-    });
-    if (usage && usage.count >= 2) {
-      return {
-        sessionId: "",
-        status: "failed",
-        message: "Daily free-account limit reached (2 accounts/day). Try again tomorrow.",
-      };
-    }
-  }
-
   // Pre-flight attested targets (if the caller declared any). Every target must
   // match a FRESH attested LabTarget row for this user — §5.2 hard line.
   if (input.targets && input.targets.length > 0) {

@@ -24,18 +24,6 @@ export async function POST() {
     });
   }
 
-  // Check daily free-account limit (2 per day per user)
-  const today = new Date().toISOString().slice(0, 10);
-  const usage = await db.clineFreeUsage.findUnique({
-    where: { userId_date: { userId: user.id, date: today } },
-  });
-  if (usage && usage.count >= 2) {
-    return NextResponse.json(
-      { error: "Daily free-account limit reached (2 accounts/day). Try again tomorrow." },
-      { status: 403 },
-    );
-  }
-
   try {
     const deviceAuth = await startClineDeviceAuth();
 

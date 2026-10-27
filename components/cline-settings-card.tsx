@@ -13,12 +13,10 @@ interface ClineSettings {
 interface ClineAuth {
   connected: boolean;
   email: string | null;
+  accountId: string | null;
   modelId: string | null;
   apiEndpoint: string | null;
   updatedAt: string | null;
-  dailyCount: number;
-  dailyLimit: number;
-  dailyRemaining: number;
 }
 
 interface FreeModel {
@@ -65,12 +63,10 @@ export function ClineSettingsCard() {
       setAuth({
         connected: data.connected ?? false,
         email: data.email ?? null,
+        accountId: data.accountId ?? null,
         modelId: data.modelId ?? null,
         apiEndpoint: data.apiEndpoint ?? null,
         updatedAt: data.updatedAt ?? null,
-        dailyCount: data.dailyCount ?? 0,
-        dailyLimit: data.dailyLimit ?? 2,
-        dailyRemaining: data.dailyRemaining ?? 2,
       });
     } catch {
       // swallow
@@ -193,9 +189,9 @@ export function ClineSettingsCard() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ deviceCode }),
       });
+      const data = await res.json();
       if (!res.ok) {
-        const err = await res.json();
-        setError(err.error || "Failed to confirm login");
+        setError(data.error || "Failed to confirm login");
         setConnecting(false);
         return;
       }
@@ -265,19 +261,23 @@ export function ClineSettingsCard() {
         </div>
 
         {auth && (
-          <div className="grid gap-3 md:grid-cols-3 text-sm">
-            <div className="flex items-center gap-2 p-2 rounded bg-fg/10">
-              <span className="text-xs text-fg-muted">Daily usage</span>
-              <span className="text-xs font-medium text-fg">
-                {auth.dailyCount}/{auth.dailyLimit}
-              </span>
-            </div>
-            <div className="flex items-center gap-2 p-2 rounded bg-fg/10">
-              <span className="text-xs text-fg-muted">Remaining today</span>
-              <span className="text-xs font-medium text-fg">
-                {auth.dailyRemaining}
-              </span>
-            </div>
+          <div className="grid gap-3 md:grid-cols-4 text-sm">
+            {auth.email && (
+              <div className="flex items-center gap-2 p-2 rounded bg-fg/10">
+                <span className="text-xs text-fg-muted">Account</span>
+                <span className="text-xs font-medium text-fg truncate" title={auth.email}>
+                  {auth.email}
+                </span>
+              </div>
+            )}
+            {auth.accountId && (
+              <div className="flex items-center gap-2 p-2 rounded bg-fg/10">
+                <span className="text-xs text-fg-muted">Account ID</span>
+                <span className="text-xs font-medium text-fg truncate" title={auth.accountId}>
+                  {auth.accountId}
+                </span>
+              </div>
+            )}
             <div className="flex items-center gap-2 p-2 rounded bg-fg/10">
               <span className="text-xs text-fg-muted">Status</span>
               <span className={`text-xs font-medium ${auth.connected ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`}>
@@ -285,12 +285,6 @@ export function ClineSettingsCard() {
               </span>
             </div>
           </div>
-        )}
-
-        {auth && auth.dailyRemaining === 0 && (
-          <p className="mt-2 text-xs text-red-600 dark:text-red-400">
-            Daily free-account limit reached (2 accounts/day). Try again tomorrow.
-          </p>
         )}
       </div>
 

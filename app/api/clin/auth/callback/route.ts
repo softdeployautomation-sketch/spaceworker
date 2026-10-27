@@ -76,14 +76,6 @@ export async function POST(req: Request) {
     // Clean up device code
     await db.clineDeviceAuth.delete({ where: { deviceCode } });
 
-    // Increment daily free-account usage counter
-    const today = new Date().toISOString().slice(0, 10);
-    await db.clineFreeUsage.upsert({
-      where: { userId_date: { userId: user.id, date: today } },
-      update: { count: { increment: 1 } },
-      create: { userId: user.id, date: today, count: 1 },
-    });
-
     return NextResponse.json({
       ok: true,
       email: credentials.email,

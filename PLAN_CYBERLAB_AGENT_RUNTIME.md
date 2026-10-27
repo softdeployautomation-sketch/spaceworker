@@ -159,13 +159,13 @@ All phases P0–P3 are complete. Cyber Lab agent runtime is ready for production
 - P4.3 Dynamic free models endpoint: DONE
 - P4.4 Settings card (login status, model dropdown, logout): DONE
 - P4.5 cline-agent.ts changes: DONE — fixed range scope, type mismatches, TSC clean
-- P4.7 Fix login auto-connect (in progress → DONE)
-- Added loginPending state + auto-polling of /api/clin/auth/me so connection updates without manual refresh
-- Added confirmLogin() that calls /api/clin/auth/callback with deviceCode
-- Model field changed from manual Input to <select> dropdown populated from /api/clin/models/free (live models, no typing)
-- Auth status now shows email when connected
-- Added "Complete Cline Login" pending UI with verification URI + user code + confirm/cancel buttons
-- handleLogout now stops polling and clears pending state
+- P4.7 Fix login auto-connect → DONE
+- Removed daily usage counter (0/2, remaining 2) from UI, login route, callback route, me route, and cline-agent.ts
+- Auth now shows Cline account email + account ID (decrypted from stored OAuth token) instead of daily usage
+- confirmLogin now parses response body before checking res.ok (avoids double-read crash)
+- Auto-polling of /api/clin/auth/me every 5s during pending login; stops on connected state
+- Connection persists across page reloads (loadAuth runs on mount, reads stored tokens from DB)
+- Settings page auto-updates to "Connected" after confirmation without manual refresh
 
 ### Goal
 Users login to Cline free tier (email-verified OAuth, same flow as Cline extension), get free model access with 2 accounts/day limit, can logout and switch accounts. MCP server on SpaceWorker lets Cline connect to Cyber Lab tools. Free models load dynamically from Cline — no manual typing.
