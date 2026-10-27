@@ -192,6 +192,7 @@ beforeEach(() => {
   Cl.setDbForTesting(fakeDb as any);
   Cl.setGateForTesting(async (_userId: string) => mockGateResult ?? { open: false, enabled: false, entitled: false, consented: false });
   Cl.setClineCoreForTesting(fakeClineCore as any);
+  Cl.setClineAccessTokenResolverForTesting(async () => null);
 });
 
 afterEach(() => {
@@ -516,4 +517,108 @@ test("P2.3 — resumeClineSession rejects frozen session", async () => {
   const resumeResult = await resumeClineSession(sessionId, "user-p2c", "try to resume");
   assert.equal(resumeResult.status, "failed");
   assert.ok(resumeResult.message.includes("frozen"), `expected frozen message, got: ${resumeResult.message}`);
+});
+// ---------------------------------------------------------------------------
+// TASK_246 — Cline OAuth token wiring (the "Connected but useless" bug)
+// ---------------------------------------------------------------------------
+
+test("TASK_246.1 — connected OAuth session hands the DECRYPTED token to the SDK", async () => {
+  mockGateResult = { open: true, enabled: true, entitled: true, consented: true };
+  settingsRows.set("user-oauth", {
+    userId: "user-oauth",
+    clineModelId: "claude-sonnet-4-6",
+    clineApiEndpoint: null,
+    clineApiKeyEnc: "sk-stale-manual-key",
+    // Ciphertext at rest, as produced by lib/clin/token-store.ts.
+    clineOAuthTokenEnc: "v1:not-the-key",
+    updatedAt: new Date(),
+  });
+  Cl.setClineAccessTokenResolverForTesting(async () => "decrypted-oauth-access-token");
+
+  const { startClineLabSession } = Cl;
+  const result = await startClineLabSession({ userId: "user-oauth", prompt: "Recon the target" });
+  assert.equal(result.status, "started", `expected started, got ${result.status}: ${result.message}`);
+
+  assert.equal(lastStartInput.config.apiKey, "decrypted-oauth-access-token");
+  assert.notEqual(lastStartInput.config.apiKey, "v1:not-the-key", "never pass the stored blob as a key");
+
+  const session = sessions.get(result.sessionId);
+  assert.equal(session.modelProvider, "cline-free", "OAuth sessions are labelled cline-free for audit");
+  const { createHash } = await import("node:crypto");
+  assert.equal(
+    session.apiKeyHash,
+    createHash("sha256").update("decrypted-oauth-access-token").digest("hex"),
+    "stored hash is of the real token, not the blob",
+  );
+});
+
+test("TASK_246.2 — explicit request key beats OAuth; OAuth beats the stored manual key", async () => {
+  mockGateResult = { open: true, enabled: true, entitled: true, consented: true };
+  settingsRows.set("user-order", {
+    userId: "user-order",
+    clineModelId: "claude-sonnet-4-6",
+    clineApiEndpoint: null,
+    clineApiKeyEnc: "sk-manual",
+    clineOAuthTokenEnc: "v1:blob",
+    updatedAt: new Date(),
+  });
+  Cl.setClineAccessTokenResolverForTesting(async () => "oauth-token");
+
+  const { startClineLabSession } = Cl;
+
+  const explicit = await startClineLabSession({
+    userId: "user-order",
+    prompt: "explicit key",
+    apiKey: "sk-explicit",
+  });
+  assert.equal(explicit.status, "started");
+  assert.equal(lastStartInput.config.apiKey, "sk-explicit", "request key wins");
+  assert.equal(sessions.get(explicit.sessionId).modelProvider, "cline");
+
+  const oauth = await startClineLabSession({ userId: "user-order", prompt: "oauth key" });
+  assert.equal(oauth.status, "started");
+  assert.equal(lastStartInput.config.apiKey, "oauth-token", "OAuth wins over the stored manual key");
+  assert.equal(sessions.get(oauth.sessionId).modelProvider, "cline-free");
+});
+
+test("TASK_246.3 — no OAuth → the stored manual key is still used", async () => {
+  mockGateResult = { open: true, enabled: true, entitled: true, consented: true };
+  settingsRows.set("user-manual", {
+    userId: "user-manual",
+    clineModelId: "claude-sonnet-4-6",
+    clineApiEndpoint: null,
+    clineApiKeyEnc: "sk-manual-only",
+    updatedAt: new Date(),
+  });
+
+  const { startClineLabSession } = Cl;
+  const result = await startClineLabSession({ userId: "user-manual", prompt: "manual" });
+  assert.equal(result.status, "started");
+  assert.equal(lastStartInput.config.apiKey, "sk-manual-only");
+  assert.equal(sessions.get(result.sessionId).modelProvider, "cline");
+});
+
+test("TASK_246.4 — resume re-resolves a live OAuth token (not the stored blob) and uses the SDK provider id", async () => {
+  mockGateResult = { open: true, enabled: true, entitled: true, consented: true };
+  settingsRows.set("user-resume-oauth", {
+    userId: "user-resume-oauth",
+    clineModelId: "claude-sonnet-4-6",
+    clineApiEndpoint: null,
+    clineApiKeyEnc: null,
+    clineOAuthTokenEnc: "v1:blob",
+    updatedAt: new Date(),
+  });
+  Cl.setClineAccessTokenResolverForTesting(async () => "first-oauth-token");
+
+  const { startClineLabSession, stopClineSession, resumeClineSession } = Cl;
+  const started = await startClineLabSession({ userId: "user-resume-oauth", prompt: "start" });
+  assert.equal(started.status, "started");
+
+  await stopClineSession(started.sessionId, "user-resume-oauth");
+  Cl.setClineAccessTokenResolverForTesting(async () => "refreshed-oauth-token");
+
+  const resumed = await resumeClineSession(started.sessionId, "user-resume-oauth", "continue");
+  assert.ok(resumed.status === "started" || resumed.status === "completed", resumed.message);
+  assert.equal(lastStartInput.config.apiKey, "refreshed-oauth-token");
+  assert.equal(lastStartInput.config.providerId, "cline", "SDK provider id must never be our cline-free label");
 });

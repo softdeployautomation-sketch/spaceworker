@@ -8,6 +8,7 @@ import { ClineCore } from "@cline/sdk";
 import { ToolApprovalRequest, ToolApprovalResult } from "@cline/shared";
 
 import { db } from "@/lib/db";
+import { getClineAccessToken } from "@/lib/clin/token-store";
 import { cyberLabGate, type CyberLabGate } from "./gate";
 import type { CyberLabAgentSettings, CyberLabAgentSession } from "@prisma/client";
 import { preflightTargets, type PreflightInput } from "./targets-core";
@@ -20,6 +21,7 @@ import { TargetRefusedError } from "./targets";
 let _dbOverride: typeof db | null = null;
 let _gateOverride: typeof cyberLabGate | null = null;
 let _clineCoreOverride: typeof ClineCore | null = null;
+let _clineAccessTokenOverride: ((userId: string) => Promise<string | null>) | null = null;
 
 export function setDbForTesting(database: typeof db): void {
   _dbOverride = database;
@@ -31,6 +33,13 @@ export function setGateForTesting(gate: typeof cyberLabGate): void {
 
 export function setClineCoreForTesting(core: typeof ClineCore): void {
   _clineCoreOverride = core;
+}
+
+/** TASK_246: lets tests prove the decrypted OAuth token (not the blob) reaches the SDK. */
+export function setClineAccessTokenResolverForTesting(
+  resolver: ((userId: string) => Promise<string | null>) | null,
+): void {
+  _clineAccessTokenOverride = resolver;
 }
 
 export function setPendingApprovalForTesting(sessionId: string, request: ToolApprovalRequest): void {
@@ -47,6 +56,31 @@ function _gate(): typeof cyberLabGate {
 
 function _clineCore(): typeof ClineCore {
   return _clineCoreOverride ?? ClineCore;
+}
+
+async function _clineAccessToken(userId: string): Promise<string | null> {
+  return (_clineAccessTokenOverride ?? getClineAccessToken)(userId);
+}
+
+type ClineKeySource = "request" | "oauth" | "manual" | "none";
+
+/**
+ * TASK_246 — one precedence rule for start and resume:
+ * explicit request key > connected Cline OAuth token (decrypted + refreshed) > stored manual key.
+ *
+ * Before this, the OAuth branch required `providerId === "cline-free"` (never sent
+ * by the session route) and passed the encrypted column as the API key.
+ */
+async function resolveClineApiKey(
+  userId: string,
+  settings: Pick<CyberLabAgentSettings, "clineApiKeyEnc"> | null,
+  explicitKey?: string,
+): Promise<{ apiKey?: string; source: ClineKeySource }> {
+  if (explicitKey) return { apiKey: explicitKey, source: "request" };
+  const oauthToken = await _clineAccessToken(userId);
+  if (oauthToken) return { apiKey: oauthToken, source: "oauth" };
+  if (settings?.clineApiKeyEnc) return { apiKey: settings.clineApiKeyEnc, source: "manual" };
+  return { source: "none" };
 }
 
 // ---------------------------------------------------------------------------
@@ -308,24 +342,18 @@ export async function startClineLabSession(input: StartSessionInput): Promise<St
   const modelId = input.modelId ?? settings?.clineModelId ?? "claude-sonnet-4-6";
   const apiEndpoint = input.apiEndpoint ?? settings?.clineApiEndpoint;
 
-  // Resolve API key: manual key > OAuth token (cline-free) > nothing
-  let apiKey: string | undefined;
-  let providerAccountId: string | undefined;
-  if (input.apiKey) {
-    apiKey = input.apiKey;
-  } else if (input.providerId === "cline-free" && settings?.clineOAuthTokenEnc) {
-    apiKey = settings.clineOAuthTokenEnc ?? undefined; // OAuth access token used as Cline API key
-    providerAccountId = "cline-free"; // audit marker
-  } else {
-    apiKey = settings?.clineApiKeyEnc ?? undefined;
-  }
+  // Resolve API key: explicit request key > OAuth (decrypted, refreshed) > manual key.
+  const resolvedKey = await resolveClineApiKey(input.userId, settings, input.apiKey);
+  const apiKey = resolvedKey.apiKey;
+  const modelProvider =
+    input.providerId ?? (resolvedKey.source === "oauth" ? "cline-free" : "cline");
 
   await _db().cyberLabAgentSession.create({
     data: {
       id: sessionId,
       userId: input.userId,
       status: "pending",
-      modelProvider: input.providerId ?? "cline",
+      modelProvider,
       modelId,
       apiEndpoint,
       apiKeyHash: apiKey ? hashApiKey(apiKey) : undefined,
@@ -494,13 +522,10 @@ export async function resumeClineSession(
   const modelId = session.modelId ?? settings?.clineModelId ?? "claude-sonnet-4-6";
   const apiEndpoint = session.apiEndpoint ?? settings?.clineApiEndpoint;
 
-  // Resolve API key: OAuth token (cline-free) > manual key > nothing
-  let apiKey: string | undefined;
-  if (session.modelProvider === "cline-free" && settings?.clineOAuthTokenEnc) {
-    apiKey = settings.clineOAuthTokenEnc ?? undefined;
-  } else {
-    apiKey = settings?.clineApiKeyEnc ?? undefined;
-  }
+  // Same precedence as start: explicit key > OAuth (decrypted, refreshed) > manual.
+  // A session that began with OAuth must keep using a live token, not a stored blob.
+  const resolvedKey = await resolveClineApiKey(userId, settings);
+  const apiKey = resolvedKey.apiKey;
 
   // Recreate the Cline instance from stored config.
   const cwd = session.cwd ?? join(process.cwd(), `cyberlab-sessions/${sessionId}`);
@@ -547,7 +572,9 @@ export async function resumeClineSession(
   await cline.start({
     config: {
       sessionId,
-      providerId: session.modelProvider,
+      // SDK provider is always "cline"; `modelProvider` is our own audit label
+      // ("cline" | "cline-free" | "external") and is not an SDK provider id.
+      providerId: "cline",
       modelId,
       apiKey: apiKey ?? undefined,
       baseUrl: apiEndpoint ?? undefined,

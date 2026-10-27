@@ -159,7 +159,27 @@ All phases P0–P3 are complete. Cyber Lab agent runtime is ready for production
 - P4.3 Dynamic free models endpoint: DONE
 - P4.4 Settings card (login status, model dropdown, logout): DONE
 - P4.5 cline-agent.ts changes: DONE — fixed range scope, type mismatches, TSC clean
-- P4.6 Fix login auto-connect → DONE (verified: TSC clean, 16/16 spike tests pass)
+- P4.7 **TASK_246 — the real root cause + proper fix** → DONE (see below). P4.6 and the four
+  attempts before it were UI-only and could not have worked.
+  - **Why "fetch failed"**: `callback/route.ts` defaulted `apiBaseUrl` to `https://api.cline.com`,
+    a host that does not resolve (`curl: (6) Could not resolve host` from the VPS). The SDK then
+    POSTs `/api/v1/auth/register` to it, Node throws `TypeError: fetch failed`, and the route
+    returned `err.message` verbatim as the confirm error. The SDK's own production default is
+    `https://api.cline.bot` (resolves; returns Cline's real validation body for the same payload).
+  - **Why auto-connect could never work**: the P4.6 "auto-poller" read `GET /me`, which only reads
+    the DB; tokens were written *only* by the manual Confirm route. Nothing server-side ever polled
+    WorkOS. Live DB at diagnosis: 8 `ClineDeviceAuth` rows, 0 unexpired, 0 connected.
+  - **Why "Connected" would still not power sessions**: the OAuth branch required
+    `providerId === "cline-free"` (never sent by the session route) and passed the stored XOR
+    ciphertext as the SDK `apiKey`.
+  - Fix: `lib/clin/config.ts` (one `.bot` host), `token-crypto.ts` (AES-256-GCM `v1:` envelope keyed
+    from `SESSION_SECRET`, legacy XOR readable), `token-store.ts` (full creds + refresh via
+    `getValidClineCredentials`), `device-auth.ts` + `POST /api/clin/auth/poll` (server-side polling,
+    202 pending / 410 expired / 403 denied / 502 unreachable, never echoes transport errors),
+    callback = alias, card polls `/poll` and never treats 202 as success, cline-agent resolves
+    `request key > decrypted OAuth > stored manual key` in start **and** resume.
+  - No schema change, no migration, no new env var. Tests: `tests/clin-{token-crypto,device-auth,auth-routes}.test.ts`
+    + TASK_246 cases in `tests/cline-agent-spike.test.ts`.
   - settings card: replaced state-mutating startPolling (POST /api/clin/auth/callback) with read-only useEffect poller (GET /api/clin/auth/me) that runs only while loginPending is set
   - Auto-connect: when /api/clin/auth/me returns connected=true, poller stops, UI switches to "Connected" without page refresh
   - "Confirm Connected" button: manual fallback that POSTs to callback
@@ -181,7 +201,8 @@ Users login to Cline free tier (email-verified OAuth, same flow as Cline extensi
 
 ### API routes (created)
 - `POST /api/clin/auth/login` — initiate Cline device auth, return userCode + verification URI
-- `POST /api/clin/auth/callback` — complete device auth, store encrypted access/refresh tokens
+- `POST /api/clin/auth/poll` — server-side device-code poll (202 pending · 410 expired · 403 denied · 502 unreachable)
+- `POST /api/clin/auth/callback` — alias of `/poll` (calls it with a 15s window) for older clients
 - `POST /api/clin/auth/logout` — clear stored auth
 - `GET /api/clin/auth/me` — auth status + daily usage count
 - `GET /api/clin/mcp/sse` — MCP SSE endpoint (Cline connects via Server-Sent Events)
@@ -194,7 +215,9 @@ Users login to Cline free tier (email-verified OAuth, same flow as Cline extensi
 - Daily usage counter (e.g., "1/2 free accounts used today")
 - Free model dropdown populated dynamically from Cline (no manual typing)
 
-### cline-agent.ts changes (TODO)
-- Support `providerId: "cline-free"` — uses stored OAuth token as `apiKey`
-- Check daily limit before starting session; reject if exceeded
-- Store `providerAccountId` in session for audit
+### cline-agent.ts changes (DONE — TASK_246)
+- Resolves the key as explicit request key > decrypted+refreshed OAuth token > stored manual key
+  (start **and** resume); the old `providerId === "cline-free"` gate is gone.
+- OAuth-backed sessions are labelled `modelProvider: "cline-free"` for audit, while the SDK still
+  receives its real provider id (`"cline"`); resume previously sent our label to the SDK.
+- Daily usage counting was removed earlier and must not be reintroduced.

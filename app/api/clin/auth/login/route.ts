@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/session-user";
 import { db } from "@/lib/db";
 import { startClineDeviceAuth } from "@cline/sdk";
+import { readClineCredentials, clearClineCredentials } from "@/lib/clin/token-store";
 
 export const dynamic = "force-dynamic";
 
@@ -11,23 +12,26 @@ export async function POST() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // Check if user already has an active Cline OAuth connection
-  const existing = await db.cyberLabAgentSettings.findUnique({
-    where: { userId: user.id },
-    select: { clineOAuthTokenEnc: true, clineRefreshTokenEnc: true, updatedAt: true },
-  });
-  if (existing?.clineOAuthTokenEnc) {
+  // TASK_246: a stored token we can no longer decrypt must not block re-login.
+  const stored = await readClineCredentials(user.id);
+  if (stored.ok) {
     return NextResponse.json({
       alreadyConnected: true,
-      email: undefined,
+      email: stored.credentials.email ?? undefined,
       message: "Cline account already connected. Log out first to connect a different account.",
     });
+  }
+  if (stored.reason === "unreadable") {
+    await clearClineCredentials(user.id);
   }
 
   try {
     const deviceAuth = await startClineDeviceAuth();
 
-    // Store the device code temporarily so the callback can associate it with this user
+    // One pending login per user: drop this user's previous codes (expired or
+    // abandoned) before recording the new one. This is also the housekeeping
+    // that keeps the table from growing forever.
+    await db.clineDeviceAuth.deleteMany({ where: { userId: user.id } });
     await db.clineDeviceAuth.create({
       data: {
         deviceCode: deviceAuth.deviceCode,
@@ -43,6 +47,7 @@ export async function POST() {
       verificationUri: deviceAuth.verificationUri,
       verificationUriComplete: deviceAuth.verificationUriComplete,
       expiresInSeconds: deviceAuth.expiresInSeconds,
+      expiresAt: new Date(Date.now() + deviceAuth.expiresInSeconds * 1000).toISOString(),
       pollIntervalSeconds: deviceAuth.pollIntervalSeconds,
       message: `Visit ${deviceAuth.verificationUri} and enter code: ${deviceAuth.userCode}`,
     });
