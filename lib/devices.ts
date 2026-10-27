@@ -46,9 +46,22 @@ export function isDeviceOnline(lastSeenAt: Date | null): boolean {
  * its old meaning — a deliberate sleep state that survives going stale, but
  * yields to a live heartbeat.
  */
-export function deviceStatus(device: { status: string; lastSeenAt: Date | null }): string {
-  if (device.status === "asleep") return isDeviceOnline(device.lastSeenAt) ? "online" : "asleep";
+// TASK_238 — verdict window, far shorter than the 5-minute heartbeat window.
+export const VERDICT_FRESH_MS = 60_000;
+
+export function isVerdictFresh(at: Date | null | undefined): boolean {
+  if (!at) return false;
+  return Date.now() - at.getTime() < VERDICT_FRESH_MS;
+}
+
+export function deviceStatus(device: {
+  status: string;
+  lastSeenAt: Date | null;
+  onlineConfirmedAt?: Date | null;
+}): string {
   if (device.status === "offline") return "offline";
+  if (isVerdictFresh(device.onlineConfirmedAt)) return "online";
+  if (device.status === "asleep") return isDeviceOnline(device.lastSeenAt) ? "online" : "asleep";
   return isDeviceOnline(device.lastSeenAt) ? "online" : "offline";
 }
 
@@ -67,6 +80,8 @@ export const deviceListSelector = {
   osName: true,
   osVersion: true,
   lastSeenAt: true,
+  // TASK_238 — the verdict anchor; list pages render freshness from this too.
+  onlineConfirmedAt: true,
   createdAt: true,
   powerPolicy: { select: { mode: true, until: true } },
   // TASK_128 — the row badge (Public/Private) + the onboarding strip render

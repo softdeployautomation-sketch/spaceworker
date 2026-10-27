@@ -1721,6 +1721,49 @@ export async function expireClones(): Promise<ExpireClonesResult> {
   return out;
 }
 
+// TASK_243 — stop relay clones whose relay tunnel is provably down.
+// Scans relayHealth rows and revokes any non-terminal clone whose relay
+// status is "down" (consecutive failures past threshold). Returns counts.
+export interface EnforceRelayFailClosedResult {
+  scanned: number;
+  stopped: number;
+  errors: number;
+}
+
+export async function enforceRelayFailClosed(): Promise<EnforceRelayFailClosedResult> {
+  const out: EnforceRelayFailClosedResult = { scanned: 0, stopped: 0, errors: 0 };
+  const rows = await db.relayHealth.findMany({
+    where: { status: "down" },
+    select: { deviceId: true },
+    take: 100,
+  });
+  for (const { deviceId } of rows) {
+    out.scanned += 1;
+    try {
+      const job = await db.cloneJob.findFirst({
+        where: {
+          destinationDeviceId: deviceId,
+          status: { notIn: [...CLONE_TERMINAL_STATES] },
+        },
+      });
+      if (job) {
+        await revokeClone(job.id, "system");
+        out.stopped += 1;
+      }
+    } catch (err) {
+      out.errors += 1;
+      await recordAgentActionAudit({
+        userId: "",
+        action: "browser-clone",
+        status: "failed",
+        sourceDeviceId: deviceId,
+        detail: { reason: `relay_failclosed_error: ${errMessage(err)}` },
+      });
+    }
+  }
+  return out;
+}
+
 export interface PanicCloneCounts {
   clonesRevoked: number;
   cloneSessionsStopped: number;
