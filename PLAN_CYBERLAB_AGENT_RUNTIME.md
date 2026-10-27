@@ -1,6 +1,6 @@
 # PLAN — Cyber Lab Agent Runtime (Cline Core SDK)
 
-Status: **ACT — P0/P1/P2 complete, P3 complete**  
+Status: **ACT — P0/P1/P2/P3 complete, P4 in progress**  
 Date: 2026-10-27  
 Reconstructs Cyber Lab as a real, agent-controlled offensive security lab leveraging Cline Core SDK (not building a custom agent).
 
@@ -150,3 +150,41 @@ Bug hunter system prompt (in `buildCyberLabSystemPrompt`):
 - ATT&CK technique mappings: T1046, T1595, T1110.001, T1190, T1590.002
 
 All phases P0–P3 are complete. Cyber Lab agent runtime is ready for production use behind the gate + AUP + attested-target pre-flight.
+
+## 14. P4 — Cline Free-Tier Auth + MCP + Dynamic Models (in progress)
+
+### Status
+- P4.1 Auth routes (login/callback/logout/me): DONE
+- P4.2 MCP server (SSE + message): DONE
+- P4.3 Dynamic free models endpoint: DONE
+- P4.4 Settings card (login status, model dropdown, logout): DONE
+- P4.5 cline-agent.ts changes: DONE — fixed range scope, type mismatches, TSC clean
+- P4.6 Commit + push + deploy: TODO
+
+### Goal
+Users login to Cline free tier (email-verified OAuth, same flow as Cline extension), get free model access with 2 accounts/day limit, can logout and switch accounts. MCP server on SpaceWorker lets Cline connect to Cyber Lab tools. Free models load dynamically from Cline — no manual typing.
+
+### Schema (additive — already in schema.prisma)
+- `CyberLabAgentSettings.clineOAuthTokenEnc` / `clineRefreshTokenEnc` — encrypted OAuth tokens
+- `ClineDeviceAuth` — temporary device-code mapping for Cline device-flow login (migration `20261203000000_task_cyberlab_cline_device_auth`)
+- `ClineFreeUsage` — `{id, userId, date, count}` — daily usage counter (2 accounts/day per user), migration `20261202000000_task_cyberlab_cline_free_auth`
+
+### API routes (created)
+- `POST /api/clin/auth/login` — initiate Cline device auth, return userCode + verification URI
+- `POST /api/clin/auth/callback` — complete device auth, store encrypted access/refresh tokens
+- `POST /api/clin/auth/logout` — clear stored auth
+- `GET /api/clin/auth/me` — auth status + daily usage count
+- `GET /api/clin/mcp/sse` — MCP SSE endpoint (Cline connects via Server-Sent Events)
+- `POST /api/clin/mcp/message` — MCP JSON-RPC (cyberlab.start_session/send_message/stop_session/session_status)
+- `GET /api/clin/models/free` — dynamically returns Cline's free models (with fallback)
+
+### Settings card updates (DONE)
+- Login status badge (connected/disconnected)
+- Login / logout buttons
+- Daily usage counter (e.g., "1/2 free accounts used today")
+- Free model dropdown populated dynamically from Cline (no manual typing)
+
+### cline-agent.ts changes (TODO)
+- Support `providerId: "cline-free"` — uses stored OAuth token as `apiKey`
+- Check daily limit before starting session; reject if exceeded
+- Store `providerAccountId` in session for audit

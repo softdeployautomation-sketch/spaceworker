@@ -4229,6 +4229,17 @@ model CyberLabContextDocStep {
   @@index([sessionId, stepNo])
 }
 
+// Daily free-tier usage counter: 2 free Cline accounts per day per user.
+model ClineFreeUsage {
+  id        String   @id @default(cuid())
+  userId    String
+  date      String   // YYYY-MM-DD
+  count     Int      @default(0)
+
+  @@index([userId, date])
+  @@unique([userId, date])
+}
+
 // Admin kill switch: global or per-tenant freeze of agent sessions.
 model CyberLabKillSwitch {
   id        String   @id @default(cuid())
@@ -4240,4 +4251,17 @@ model CyberLabKillSwitch {
   setAt     DateTime @default(now())
 
   @@index([scope, targetId])
+}
+
+// Temporary device-code mapping for Cline OAuth device-flow login.
+// Short-lived: device codes expire within minutes. Additive only.
+model ClineDeviceAuth {
+  id        String   @id @default(cuid())
+  userId    String
+  deviceCode String  @unique
+  userCode  String
+  expiresAt DateTime
+
+  @@index([userId])
+  @@index([deviceCode])
 }

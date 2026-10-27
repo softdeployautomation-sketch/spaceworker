@@ -2,12 +2,30 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import { Button, Card, Input, Label } from "@/components/ui";
+import { Button, Card, Input, Label, Select } from "@/components/ui";
 
 interface ClineSettings {
   clineModelId: string | null;
   clineApiEndpoint: string | null;
   updatedAt: string | null;
+}
+
+interface ClineAuth {
+  connected: boolean;
+  email: string | null;
+  modelId: string | null;
+  apiEndpoint: string | null;
+  updatedAt: string | null;
+  dailyCount: number;
+  dailyLimit: number;
+  dailyRemaining: number;
+}
+
+interface FreeModel {
+  id: string;
+  name: string;
+  description: string;
+  tags: string[];
 }
 
 export function ClineSettingsCard() {
@@ -18,6 +36,9 @@ export function ClineSettingsCard() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
+  const [auth, setAuth] = useState<ClineAuth | null>(null);
+  const [freeModels, setFreeModels] = useState<FreeModel[]>([]);
+  const [loadingFree, setLoadingFree] = useState(false);
 
   const loadSettings = useCallback(async () => {
     try {
@@ -32,11 +53,52 @@ export function ClineSettingsCard() {
     }
   }, []);
 
+  const loadAuth = useCallback(async () => {
+    try {
+      const res = await fetch("/api/clin/auth/me", { cache: "no-store" });
+      if (!res.ok) return;
+      const data = await res.json();
+      setAuth({
+        connected: data.connected ?? false,
+        email: data.email ?? null,
+        modelId: data.modelId ?? null,
+        apiEndpoint: data.apiEndpoint ?? null,
+        updatedAt: data.updatedAt ?? null,
+        dailyCount: data.dailyCount ?? 0,
+        dailyLimit: data.dailyLimit ?? 2,
+        dailyRemaining: data.dailyRemaining ?? 2,
+      });
+    } catch {
+      // swallow
+    }
+  }, []);
+
+  const loadFreeModels = useCallback(async () => {
+    setLoadingFree(true);
+    try {
+      const res = await fetch("/api/clin/models/free", { cache: "no-store" });
+      if (!res.ok) return;
+      const data = await res.json();
+      setFreeModels((data.free ?? []).map((m: any) => ({
+        id: m.id,
+        name: m.name,
+        description: m.description,
+        tags: m.tags ?? [],
+      })));
+    } catch {
+      // swallow
+    } finally {
+      setLoadingFree(false);
+    }
+  }, []);
+
   useEffect(() => {
     (async () => {
       await loadSettings();
+      await loadAuth();
+      await loadFreeModels();
     })();
-  }, [loadSettings]);
+  }, [loadSettings, loadAuth, loadFreeModels]);
 
   const save = useCallback(async () => {
     setError("");
@@ -66,7 +128,47 @@ export function ClineSettingsCard() {
     } finally {
       setSaving(false);
     }
-  }, [apiKey, modelId, apiEndpoint, loadSettings]);
+  }, [apiKey, modelId, apiEndpoint, loadSettings, loadAuth]);
+
+  const handleLogin = async () => {
+    setError("");
+    try {
+      const res = await fetch("/api/clin/auth/login", { method: "POST" });
+      if (!res.ok) {
+        const err = await res.json();
+        setError(err.error || "Failed to start login");
+        return;
+      }
+      const data = await res.json();
+      if (data.alreadyConnected) {
+        setError("Cline account already connected. Log out first to connect a different account.");
+        await loadAuth();
+        return;
+      }
+      setError(
+        `Cline device auth started. User code: ${data.userCode}. Visit ${data.verificationUri} to complete login.`,
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "login_failed");
+    }
+  };
+
+  const handleLogout = async () => {
+    setError("");
+    try {
+      const res = await fetch("/api/clin/auth/logout", { method: "POST" });
+      if (!res.ok) {
+        const err = await res.json();
+        setError(err.error || "Failed to log out");
+        return;
+      }
+      await loadAuth();
+      await loadSettings();
+      setSaved(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "logout_failed");
+    }
+  };
 
   return (
     <Card className="max-w-2xl p-6">
@@ -79,6 +181,61 @@ export function ClineSettingsCard() {
         </div>
       </div>
 
+      {/* Auth status section */}
+      <div className="mb-6 p-4 rounded-lg border bg-muted/50">
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <div>
+            <h3 className="text-sm font-medium text-fg">Cline Account</h3>
+            <p className="text-xs text-fg-muted">
+              {auth?.connected
+                ? "Connected via Cline OAuth (free tier)"
+                : "Not connected — manual API key required"}
+            </p>
+          </div>
+          <div className="flex gap-2">
+            {auth?.connected ? (
+              <Button variant="ghost" onClick={handleLogout} disabled={saving}>
+                Log out
+              </Button>
+            ) : (
+              <Button onClick={handleLogin} disabled={saving}>
+                {saving ? "Starting…" : "Log in to Cline"}
+              </Button>
+            )}
+          </div>
+        </div>
+
+        {auth && (
+          <div className="grid gap-3 md:grid-cols-3 text-sm">
+            <div className="flex items-center gap-2 p-2 rounded bg-fg/10">
+              <span className="text-xs text-fg-muted">Daily usage</span>
+              <span className="text-xs font-medium text-fg">
+                {auth.dailyCount}/{auth.dailyLimit}
+              </span>
+            </div>
+            <div className="flex items-center gap-2 p-2 rounded bg-fg/10">
+              <span className="text-xs text-fg-muted">Remaining today</span>
+              <span className="text-xs font-medium text-fg">
+                {auth.dailyRemaining}
+              </span>
+            </div>
+            <div className="flex items-center gap-2 p-2 rounded bg-fg/10">
+              <span className="text-xs text-fg-muted">Status</span>
+              <span className={`text-xs font-medium ${auth.connected ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`}>
+                {auth.connected ? "Connected" : "Disconnected"}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {auth && auth.dailyRemaining === 0 && (
+          <p className="mt-2 text-xs text-red-600 dark:text-red-400">
+            Daily free-account limit reached (2 accounts/day). Try again tomorrow.
+          </p>
+        )}
+      </div>
+
+      {/* Settings form */}
       <div className="grid gap-4 md:grid-cols-3">
         <div className="flex flex-col gap-2">
           <Label>Cline API key</Label>

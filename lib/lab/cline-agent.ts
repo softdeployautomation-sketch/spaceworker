@@ -200,6 +200,8 @@ export interface StartSessionInput {
   cwd?: string;
   /** Attested targets the agent may operate on (validated pre-flight). */
   targets?: PreflightInput[];
+  /** Provider: "cline" (manual API key) | "cline-free" (stored OAuth token) | "external" */
+  providerId?: string;
 }
 
 export interface StartSessionResult {
@@ -233,6 +235,22 @@ export async function startClineLabSession(input: StartSessionInput): Promise<St
   });
   if (tenantKill?.frozen) {
     return { sessionId: "", status: "failed", message: "Your Cyber Lab agent session is frozen by admin." };
+  }
+
+  // Daily free-account limit check for cline-free provider (2 accounts/day) —
+  // fail fast BEFORE creating any LabRange or session resources.
+  if (input.providerId === "cline-free") {
+    const today = new Date().toISOString().slice(0, 10);
+    const usage = await _db().clineFreeUsage.findUnique({
+      where: { userId_date: { userId: input.userId, date: today } },
+    });
+    if (usage && usage.count >= 2) {
+      return {
+        sessionId: "",
+        status: "failed",
+        message: "Daily free-account limit reached (2 accounts/day). Try again tomorrow.",
+      };
+    }
   }
 
   // Pre-flight attested targets (if the caller declared any). Every target must
@@ -302,16 +320,28 @@ export async function startClineLabSession(input: StartSessionInput): Promise<St
   const settings = await _db().cyberLabAgentSettings.findUnique({
     where: { userId: input.userId },
   });
+
   const modelId = input.modelId ?? settings?.clineModelId ?? "claude-sonnet-4-6";
   const apiEndpoint = input.apiEndpoint ?? settings?.clineApiEndpoint;
-  const apiKey = input.apiKey ?? settings?.clineApiKeyEnc;
+
+  // Resolve API key: manual key > OAuth token (cline-free) > nothing
+  let apiKey: string | undefined;
+  let providerAccountId: string | undefined;
+  if (input.apiKey) {
+    apiKey = input.apiKey;
+  } else if (input.providerId === "cline-free" && settings?.clineOAuthTokenEnc) {
+    apiKey = settings.clineOAuthTokenEnc ?? undefined; // OAuth access token used as Cline API key
+    providerAccountId = "cline-free"; // audit marker
+  } else {
+    apiKey = settings?.clineApiKeyEnc ?? undefined;
+  }
 
   await _db().cyberLabAgentSession.create({
     data: {
       id: sessionId,
       userId: input.userId,
       status: "pending",
-      modelProvider: "cline",
+      modelProvider: input.providerId ?? "cline",
       modelId,
       apiEndpoint,
       apiKeyHash: apiKey ? hashApiKey(apiKey) : undefined,
@@ -480,6 +510,14 @@ export async function resumeClineSession(
   const modelId = session.modelId ?? settings?.clineModelId ?? "claude-sonnet-4-6";
   const apiEndpoint = session.apiEndpoint ?? settings?.clineApiEndpoint;
 
+  // Resolve API key: OAuth token (cline-free) > manual key > nothing
+  let apiKey: string | undefined;
+  if (session.modelProvider === "cline-free" && settings?.clineOAuthTokenEnc) {
+    apiKey = settings.clineOAuthTokenEnc ?? undefined;
+  } else {
+    apiKey = settings?.clineApiKeyEnc ?? undefined;
+  }
+
   // Recreate the Cline instance from stored config.
   const cwd = session.cwd ?? join(process.cwd(), `cyberlab-sessions/${sessionId}`);
   mkdirSync(cwd, { recursive: true });
@@ -515,10 +553,30 @@ export async function resumeClineSession(
   const unsubscribe = subscribeClineSession(
     sessionId,
     cline,
-    "cline",
+    session.modelProvider,
     modelId,
     apiEndpoint ?? undefined,
   );
+
+  // (Re)start the Cline session with authentication so resume works after
+  // idle shutdown, kill switch, or server restart.
+  await cline.start({
+    config: {
+      sessionId,
+      providerId: session.modelProvider,
+      modelId,
+      apiKey: apiKey ?? undefined,
+      baseUrl: apiEndpoint ?? undefined,
+      systemPrompt: buildCyberLabSystemPrompt(userId),
+      cwd,
+      workspaceRoot: cwd,
+      enableTools: true,
+      enableSpawnAgent: false,
+      enableAgentTeams: false,
+    },
+    prompt,
+    interactive: true,
+  });
 
   try {
     const result = await cline.send({ sessionId, prompt });
