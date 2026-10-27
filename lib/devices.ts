@@ -23,20 +23,8 @@ function toJson(value: unknown): Prisma.InputJsonValue | typeof Prisma.DbNull {
 // before we declare offline — fast enough to feel live without false-flips.
 export const DEVICE_ONLINE_WINDOW_MS = 5 * 60 * 1000;
 
-// TASK_238 — how long Vantra's "online" verdict stays trustworthy after the
-// last sync saw it. Deliberately much shorter than the heartbeat window: this
-// is "we were told online moments ago", not a heartbeat. Three 20s sync polls.
-// Without it, an online device whose `lastSeen` is omitted/stale reads offline
-// forever (the false-offline bug); with a 5-minute `now` stamp instead, a
-// stopped sync kept a dead device green — which is what 29a4483 fixed.
-export const VERDICT_FRESH_MS = 60_000;
-
 export function isDeviceOnline(lastSeenAt: Date | null): boolean {
   return !!lastSeenAt && Date.now() - lastSeenAt.getTime() < DEVICE_ONLINE_WINDOW_MS;
-}
-
-export function isVerdictFresh(onlineConfirmedAt: Date | null | undefined): boolean {
-  return !!onlineConfirmedAt && Date.now() - onlineConfirmedAt.getTime() < VERDICT_FRESH_MS;
 }
 
 /**
@@ -57,23 +45,11 @@ export function isVerdictFresh(onlineConfirmedAt: Date | null | undefined): bool
  * device that vanished WITHOUT a verdict age out on its own. "asleep" keeps
  * its old meaning — a deliberate sleep state that survives going stale, but
  * yields to a live heartbeat.
- *
- * TASK_238 — freshness can be proven by EITHER anchor: a real heartbeat
- * (`lastSeenAt`) or a recent online verdict (`onlineConfirmedAt`). Vantra
- * omits `lastSeen` for some online agents; without the verdict anchor those
- * machines were reported offline while online (the false-offline bug). The
- * verdict window is short (VERDICT_FRESH_MS) so a stopped sync still ages out.
  */
-export function deviceStatus(device: {
-  status: string;
-  lastSeenAt: Date | null;
-  onlineConfirmedAt?: Date | null;
-}): string {
+export function deviceStatus(device: { status: string; lastSeenAt: Date | null }): string {
   if (device.status === "asleep") return isDeviceOnline(device.lastSeenAt) ? "online" : "asleep";
   if (device.status === "offline") return "offline";
-  return isDeviceOnline(device.lastSeenAt) || isVerdictFresh(device.onlineConfirmedAt)
-    ? "online"
-    : "offline";
+  return isDeviceOnline(device.lastSeenAt) ? "online" : "offline";
 }
 
 // ---------------------------------------------------------------------------
@@ -91,7 +67,6 @@ export const deviceListSelector = {
   osName: true,
   osVersion: true,
   lastSeenAt: true,
-  onlineConfirmedAt: true,
   createdAt: true,
   powerPolicy: { select: { mode: true, until: true } },
   // TASK_128 — the row badge (Public/Private) + the onboarding strip render
@@ -182,10 +157,6 @@ export async function recordHeartbeat(userId: string, input: HeartbeatInput): Pr
             input.hardwareSummary !== undefined ? toJson(input.hardwareSummary) : undefined,
           lastSeenAt: now,
           status: "online",
-          // TASK_241 — stamp the "new device" claim here too. This path
-          // notifies immediately below; without the stamp the next syncDevices
-          // would see a null claim and send a second ping for the same device.
-          addedNotifiedAt: now,
         },
       });
 

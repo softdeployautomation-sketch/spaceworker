@@ -4,8 +4,6 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   Activity,
-  ChevronDown,
-  FileCode2,
   Moon,
   Monitor,
   Plus,
@@ -125,8 +123,6 @@ export function DeviceList() {
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
   const [adding, setAdding] = useState(false);
-  // 2026-10-22 — caret menu under "Add a device" (Scripts entry).
-  const [addMenu, setAddMenu] = useState(false);
   // Tier model: the Add-a-device panel exposes the user's TWO install paths.
   // "public" = the shareable one-time link; "private" = a PowerShell install
   // command against the private agent domain (premium/admin-granted only —
@@ -197,26 +193,6 @@ export function DeviceList() {
   // removal never freezes the whole list).
   const [removingId, setRemovingId] = useState("");
   const [movingId, setMovingId] = useState("");
-  // TASK_234 B1 — the private install command the Move click minted, shown
-  // until dismissed (masked until revealed, copy gated on reveal).
-  // TASK_235 — `singleLine` is the relay-safe sibling (one line, no `$var =`
-  // assignments) shown FIRST: it survives a paste into PowerShell AND the
-  // public device terminal untouched; `command` (multiline) kept as fallback.
-  const [moveInstruction, setMoveInstruction] = useState<{
-    deviceName: string;
-    command: string;
-    singleLine: string;
-    moved: boolean;
-    // TASK_236 — the device id the plan belongs to (the verify call needs it)
-    // and the verification state: "not_checked" (we haven't asked yet),
-    // "checking", "verified" (private copy is live — the user may now delete
-    // the public row THEMSELVES), or "not_verified" (private copy not seen yet
-    // — the public row stays exactly where it is).
-    deviceId: string;
-    verifyState: "not_checked" | "checking" | "verified" | "not_verified";
-    verifyMessage: string;
-  } | null>(null);
-  const [moveRevealed, setMoveRevealed] = useState(false);
   // TASK_224 — which history row's Delete is in flight (per-row busy state,
   // mirroring removingId above: a slow delete never freezes the other rows).
   const [deletingId, setDeletingId] = useState("");
@@ -349,9 +325,9 @@ export function DeviceList() {
     };
   }, [refreshAll]);
 
-  // TASK_128 — 1-minute tick for the onboarding strip/badge countdown. Separate
-  // from the 20 s data poll on purpose: the time text must move even when the
-  // list payload is unchanged.
+  // TASK_128 — 10-second tick for time-ago labels and onboarding countdown.
+  // Separate from the 20 s data poll on purpose: the time text must move even
+  // when the list payload is unchanged.
   useEffect(() => {
     const timer = setInterval(() => setNowMs(Date.now()), 10_000);
     return () => clearInterval(timer);
@@ -642,13 +618,9 @@ export function DeviceList() {
   // There is no `window.confirm` here — the themed dialog matches the rest of
   // the app (and the desktop EXE build has no browser chrome to fall back on).
   //
-  // TASK_231 — one warning, then the deletion they asked for. `agent_offline`
-  // (the service can't reach the machine right now) falls through to the
-  // local-only removal SILENTLY: a second dialog saying "the removal didn't
-  // go through" would break the promise the warning just made, and the local
-  // path (?local=1) produces the same outcome from the owner's view — the row
-  // is gone. No user-facing surface may ever hint that an admin can recover a
-  // device: the Deleted list is admin-only, for escalated situations.
+  // Never silent: an agent the service can't reach answers `agent_offline`, and
+  // that is surfaced with the documented local-only escape hatch — which is
+  // NEVER the default, and says in plain words that the agent stays installed.
   async function removeDeviceRow(d: DeviceRow) {
     // TASK_181 — the wrapper build has no private-agent vocabulary: its remove
     // dialog always uses the neutral copy, whatever org the row is in.
@@ -668,10 +640,15 @@ export function DeviceList() {
             </span>
           </>
         ) : (
-          <span className="block">
-            This uninstalls the agent from the machine and removes it from your list. This
-            can&apos;t be undone — you&apos;d have to install the agent again.
-          </span>
+          <>
+            <span className="block">
+              This uninstalls the agent from the machine and removes it from your list. This
+              can&apos;t be undone — you&apos;d have to install the agent again.
+            </span>
+            <span className="mt-2 block text-fg-muted">
+              The machine&apos;s history (sessions, activity) is kept.
+            </span>
+          </>
         ),
         confirmLabel: "Remove device",
         confirmVariant: "danger",
@@ -686,10 +663,14 @@ export function DeviceList() {
       let res = await fetch(`/api/devices/${d.id}`, { method: "DELETE" });
       let data: { error?: unknown } = await res.json().catch(() => ({}));
       if (!res.ok && data.error === "agent_offline") {
-        // TASK_231 — silent local fallback (see the comment above): the
-        // service can't reach the machine, so hide the row via ?local=1 with
-        // NO dialog. The owner asked for a deletion and gets one; anything
-        // else that fails below is a real error and is said out loud.
+        const hideOnly = await confirm({
+          title: `Couldn't remove ${d.name}`,
+          description:
+            "The removal didn't go through, so nothing was changed. You can hide it from this list instead — the agent stays installed on the machine until you remove it there.",
+          confirmLabel: "Hide from list anyway",
+          confirmVariant: "danger",
+        });
+        if (!hideOnly) return;
         res = await fetch(`/api/devices/${d.id}?local=1`, { method: "DELETE" });
         data = await res.json().catch(() => ({}));
       }
@@ -711,15 +692,15 @@ export function DeviceList() {
   }
 
   // TASK_228 — "Move to private": the owner's explicit click replaces the
-  // retired silent auto-move. The private agent is dispatched silently to the
-  // device in the background — no manual command needed. The device flips to
-  // Private on the next sync after the agent installs and checks in (1–3 min).
+  // retired silent auto-move. The confirm names the one-time consequence (the
+  // agent restarts on the machine to point at the private agent); on success
+  // the whole list reloads so the device reappears under its new tier.
   async function moveDeviceRow(d: DeviceRow) {
     const confirmed = await confirm({
       title: `Move ${d.name} to private?`,
       description:
-        "The private agent will be installed silently on this device in the background (takes 1–3 minutes). Once enrolled it will appear under Private Devices.",
-      confirmLabel: "Install private agent",
+        "The private agent will be installed silently on this device in the background (takes 1–2 minutes). Once enrolled it will appear under Private Devices.",
+      confirmLabel: "Move to private",
     });
     if (!confirmed) return;
 
@@ -731,62 +712,11 @@ export function DeviceList() {
       if (!res.ok) {
         throw new Error(typeof data.error === "string" ? data.error : "Couldn't move the device");
       }
-      // Install dispatched silently — reload so the row reflects any immediate
-      // tier change; the Private row appears on the next sync (1–3 min).
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't move the device");
     } finally {
       setMovingId("");
-    }
-  }
-
-  // TASK_236 — step 2 (VERIFY), user-triggered and read-only.
-  //
-  // Asks the server whether the device has re-appeared under the PRIVATE
-  // companion org yet. This NEVER deletes anything: it only reports state, so
-  // the public row can stay online until the user has seen the private copy
-  // for themselves. The wording in the panel is deliberately "not yet" rather
-  // than "failed" — the private agent may simply not have checked in yet.
-  async function checkMoveVerification() {
-    if (!moveInstruction || moveInstruction.verifyState === "checking") return;
-    const { deviceId, deviceName } = moveInstruction;
-    setMoveInstruction((s) =>
-      s ? { ...s, verifyState: "checking", verifyMessage: "" } : s,
-    );
-    try {
-      const res = await fetch(`/api/devices/${deviceId}/move-to-private/verify`, {
-        method: "POST",
-      });
-      const data: { error?: unknown; verified?: boolean; hostname?: string } = await res
-        .json()
-        .catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(typeof data.error === "string" ? data.error : "Couldn't check");
-      }
-      const verified = data.verified === true;
-      setMoveInstruction((s) =>
-        s
-          ? {
-              ...s,
-              verifyState: verified ? "verified" : "not_verified",
-              verifyMessage: verified
-                ? `Private copy verified${data.hostname ? ` (${data.hostname})` : ""}. You can now delete the public row yourself — nothing was deleted for you.`
-                : "Private copy not seen yet. The public agent is untouched and still online — wait a minute and check again.",
-            }
-          : s,
-      );
-    } catch (e) {
-      setMoveInstruction((s) =>
-        s
-          ? {
-              ...s,
-              verifyState: "not_verified",
-              verifyMessage: `Couldn't check ${deviceName} right now. The public agent is untouched.`,
-            }
-          : s,
-      );
-      setError(e instanceof Error ? e.message : "Couldn't check");
     }
   }
 
@@ -957,68 +887,15 @@ export function DeviceList() {
           free/trial (public-only) or private-only account. The public path
           shows ONLY the wrapper link path — never the agent host/domain. */}
       <div className="rounded-xl border border-border bg-bg-elevated">
-        <div className="flex items-center">
-          <button
-            onClick={() => setAdding((v) => !v)}
-            className="flex flex-1 items-center justify-between px-4 py-3 text-left"
-          >
-            <span className="flex items-center gap-2 text-sm font-medium text-fg">
-              <Plus className="h-4 w-4" /> Add a device
-            </span>
-            <span className="text-xs text-fg-muted">{adding ? "hide" : "show"}</span>
-          </button>
-          {/* 2026-10-22 — the owner's "dropdown under Add a device": the add
-              panel stays the default action, and the caret opens the two other
-              things you can do from here (saved scripts, auto-run rules). */}
-          <div className="relative border-l border-border">
-            <button
-              onClick={() => setAddMenu((v) => !v)}
-              aria-label="More device actions"
-              aria-expanded={addMenu}
-              className="flex h-full items-center px-3 py-3 text-fg-muted transition-colors hover:text-fg"
-            >
-              <ChevronDown className="h-4 w-4" />
-            </button>
-            {addMenu && (
-              <>
-                <button
-                  className="fixed inset-0 z-10 cursor-default"
-                  aria-hidden="true"
-                  tabIndex={-1}
-                  onClick={() => setAddMenu(false)}
-                />
-                <div className="absolute right-2 top-full z-20 mt-1 w-64 overflow-hidden rounded-lg border border-border bg-bg-elevated shadow-lg">
-                  <button
-                    onClick={() => {
-                      setAddMenu(false);
-                      setAdding(true);
-                    }}
-                    className="flex w-full items-start gap-2 px-3 py-2.5 text-left transition-colors hover:bg-bg-subtle"
-                  >
-                    <Plus className="mt-0.5 h-4 w-4 text-fg-muted" />
-                    <span>
-                      <span className="block text-sm font-medium text-fg">Add a device</span>
-                      <span className="block text-xs text-fg-muted">Install the agent</span>
-                    </span>
-                  </button>
-                  <Link
-                    href="/dashboard/scripts"
-                    onClick={() => setAddMenu(false)}
-                    className="flex w-full items-start gap-2 border-t border-border px-3 py-2.5 text-left transition-colors hover:bg-bg-subtle"
-                  >
-                    <FileCode2 className="mt-0.5 h-4 w-4 text-fg-muted" />
-                    <span>
-                      <span className="block text-sm font-medium text-fg">Scripts</span>
-                      <span className="block text-xs text-fg-muted">
-                        Run now, schedule, or after enrollment
-                      </span>
-                    </span>
-                  </Link>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
+        <button
+          onClick={() => setAdding((v) => !v)}
+          className="flex w-full items-center justify-between px-4 py-3 text-left"
+        >
+          <span className="flex items-center gap-2 text-sm font-medium text-fg">
+            <Plus className="h-4 w-4" /> Add a device
+          </span>
+          <span className="text-xs text-fg-muted">{adding ? "hide" : "show"}</span>
+        </button>
         {adding && (
           <div className="border-t border-border px-4 py-4">
             {link === null ? (
@@ -1352,7 +1229,7 @@ export function DeviceList() {
                     )}
                     {/* TASK_171 — every public mint this user ever made, newest
                         first: URL + copy, a live "expires in Xh Ym"/"expired"
-                        countdown (off the existing 1-minute `nowMs` tick — no
+                        countdown (off the existing 10-second `nowMs` tick — no
                         new fetch loop), and its download count. Old rows are
                         read-only (copy only, no re-mint); the current link's
                         Generate/Regenerate/"New link" actions above are
@@ -1678,76 +1555,6 @@ export function DeviceList() {
       </div>
 
       {error && <p className="text-sm text-red-500">{error}</p>}
-
-      {/* TASK_234 B1 — the private install command minted by Move to private.
-          Same posture as the public PS command: masked until Reveal, copy
-          gated on reveal. Run it on the machine → private copy appears on the
-          next sync → delete the public row when verified.
-          TASK_235 — the one-liner (`singleLine`) shows and copies FIRST: one
-          `;`-joined statement with no `$var =` assignments, so it survives a
-          paste AND the public mesh terminal relay unfragmented (the multiline
-          original fragments over the relay — `$exe`/`$agent` null — and only
-          pastes reliably into a real PowerShell window). */}
-      {moveInstruction && (
-        <div className="space-y-2 rounded-lg border border-brand-500/40 bg-bg px-3 py-3">
-          <p className="text-xs font-medium text-fg">
-            Move {moveInstruction.deviceName} to private{moveInstruction.moved ? " (safe move — public agent stays online)" : ""} — run this on the machine{" "}
-            <span className="font-normal text-fg-muted">
-              (elevated PowerShell, one line — paste it whole). The private copy appears under Private after
-              the next sync. Your public agent keeps running the whole time — nothing is deleted for you.
-            </span>
-          </p>
-          <pre className="max-h-40 overflow-auto rounded-lg border border-border bg-bg p-3 font-mono text-xs text-fg">
-            {moveRevealed ? moveInstruction.singleLine : maskCommand(moveInstruction.singleLine)}
-          </pre>
-          {moveInstruction.verifyState !== "not_checked" && (
-            <p
-              className={`text-xs ${moveInstruction.verifyState === "verified" ? "text-fg" : "text-fg-muted"}`}
-              role="status"
-            >
-              {moveInstruction.verifyMessage}
-            </p>
-          )}
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              onClick={() => setMoveRevealed((v) => !v)}
-              className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-black/5 dark:hover:bg-white/5"
-            >
-              {moveRevealed ? "Hide" : "Reveal"}
-            </button>
-            <button
-              onClick={() => void copyText("move-install", moveInstruction.singleLine)}
-              disabled={!moveRevealed}
-              title={moveRevealed ? undefined : "Reveal first, then copy"}
-              className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
-            >
-              {copied === "move-install" ? "Copied ✓" : "Copy command"}
-            </button>
-            <button
-              onClick={() => void checkMoveVerification()}
-              disabled={moveInstruction.verifyState === "checking"}
-              title="Ask the server whether the private copy has checked in yet (read-only)"
-              className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
-            >
-              {moveInstruction.verifyState === "checking"
-                ? "Checking…"
-                : moveInstruction.verifyState === "verified"
-                  ? "Check again"
-                  : "Check private copy"}
-            </button>
-            <button
-              onClick={() => {
-                setMoveInstruction(null);
-                setMoveRevealed(false);
-                void load();
-              }}
-              className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-black/5 dark:hover:bg-white/5"
-            >
-              Done — I ran it
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* TASK_228 — the onboarding strip + failure/stuck banners are GONE with
           the quarantine; the row badge above the grid is the only onboarding
