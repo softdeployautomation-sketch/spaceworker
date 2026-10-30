@@ -6,6 +6,7 @@ import { CLOUDFLARE_HARD_ASSET_MB } from "@/lib/hosting/rules";
 import { normalizeHostInput, universalSslCovered } from "@/lib/hosting/domains";
 import { listProviders } from "@/lib/hosting/providers";
 import { readWorkerToken } from "@/lib/hosting/credentials";
+import { decryptSecretOrThrow } from "@/lib/mailbox-crypto";
 import type { CfCredential } from "@/lib/hosting/cloudflare";
 import { listActiveZones, isReservedZone } from "@/lib/hosting/workers";
 import { provisionPublicHost, teardownPublicHost } from "@/lib/hosting/public-proxy";
@@ -269,8 +270,22 @@ async function handleZonesGet(
     });
   }
 
-  // Require the Workers/DNS token — without it we cannot list zones.
-  const workerToken = readWorkerToken(row);
+  // Require a token that can list zones. Prefer the dedicated Workers/DNS token,
+  // but fall back to the account's main API token so an account added with just
+  // one token can still list zones.
+  let workerToken = readWorkerToken(row);
+  if (!workerToken) {
+    try {
+      workerToken = decryptSecretOrThrow(
+        row.tokenCiphertext,
+        row.tokenIv,
+        row.tokenTag,
+        "hosting platform account main token"
+      );
+    } catch {
+      workerToken = null;
+    }
+  }
   if (!workerToken) {
     return NextResponse.json({
       accountId,
