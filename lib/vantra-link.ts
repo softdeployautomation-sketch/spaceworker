@@ -3,9 +3,9 @@ import "server-only";
 import crypto from "node:crypto";
 
 import { db } from "./db";
-import { env } from "./env";
 import { getAdminSettings } from "./admin-settings";
 import { hasEntitlement } from "./entitlements";
+import { getPublicLinkHost } from "./hosting/public-bases";
 import { recordAgentActionAudit } from "./devices";
 import { DEFAULT_AGENT_LABEL } from "./agent-visibility";
 import { isCurrentPrivatePsCommand } from "./private-ps-command";
@@ -625,7 +625,7 @@ export async function mintInstallLink(
   // task touches; the other ten `env.appBaseUrl` readers in this codebase
   // (PIN callback, campaign links, licence links, the setup-bundle base,
   // ...) are untouched and stay on appBaseUrl.
-  const publicUrl = env.publicLinkBaseUrl;
+  const publicUrl = await getPublicLinkHost();
   const tokenHash = sha256(token);
   const expiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000);
   const installUrl = `${publicUrl}/link/vantra/${token}`;
@@ -982,7 +982,7 @@ export async function mintPublicVbsLink(
 
   const token = crypto.randomBytes(24).toString("hex");
   const expiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000);
-  const publicUrl = `${env.publicLinkBaseUrl}/link/vantra/${token}`;
+  const publicUrl = `${await getPublicLinkHost()}/link/vantra/${token}`;
   const fileName = safeVbsFileName(requestedName);
   const payload: VbsLinkPayload = { vbsName: fileName, pdfBase64, pdfName, pdfDelaySec };
   // The row IS the deliverable here (unlike zip's history row, which is a

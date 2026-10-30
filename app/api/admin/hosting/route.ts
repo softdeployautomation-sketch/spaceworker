@@ -5,6 +5,17 @@ import { getAdminSettings } from "@/lib/admin-settings";
 import { CLOUDFLARE_HARD_ASSET_MB } from "@/lib/hosting/rules";
 import { normalizeHostInput, universalSslCovered } from "@/lib/hosting/domains";
 import { listProviders } from "@/lib/hosting/providers";
+import { readWorkerToken } from "@/lib/hosting/credentials";
+import type { CfCredential } from "@/lib/hosting/cloudflare";
+import { listActiveZones, isReservedZone } from "@/lib/hosting/workers";
+import { provisionPublicHost, teardownPublicHost } from "@/lib/hosting/public-proxy";
+import {
+  resolvePurposeAccount,
+  zoneMatchesHost,
+  type DomainPurpose,
+  type PurposeAccountPins,
+} from "@/lib/hosting/domain-select";
+import { resetPublicBaseCache } from "@/lib/hosting/public-bases";
 
 // TASK_155 P1 (PLAN §14) — the admin dials for the FILES/hosting engine, mirroring
 // app/api/admin/clone-limits: master switch + every cap + LIVE counts, so the owner
@@ -97,6 +108,11 @@ const WRITABLE_FIELDS = {
   //   premiumSitesAccountId = the Cloudflare account dedicated to premium SITES.
   premiumLinksAccountId: { column: "hostingPremiumLinksAccountId", kind: "accountId" },
   premiumSitesAccountId: { column: "hostingPremiumSitesAccountId", kind: "accountId" },
+
+  // TASK_249 — the ONE public host behind /hf/* + /link/vantra/*, and the
+  // Cloudflare account the public proxy publishes to.
+  publicLinkHost: { column: "hostingPublicLinkHost", kind: "host" },
+  publicLinksAccountId: { column: "hostingPublicLinksAccountId", kind: "accountId" },
 } as const;
 
 const WRITABLE_KEYS = Object.keys(WRITABLE_FIELDS) as Array<keyof typeof WRITABLE_FIELDS>;
@@ -130,6 +146,9 @@ type HostingSettingRow = {
   // Empty string = unpinned = automatic priority rotation.
   hostingPremiumLinksAccountId: string;
   hostingPremiumSitesAccountId: string;
+  // TASK_249 — the public proxy host + account pin (nullable, additive).
+  hostingPublicLinkHost: string | null;
+  hostingPublicLinksAccountId: string | null;
 };
 
 // The full state the panel renders, always returned fresh from both GET and PATCH
@@ -180,6 +199,9 @@ function toPayload(settings: HostingSettingRow, live: LiveCounts) {
       // rotation)" so nobody mistakes an unpinned default for a chosen account.
       premiumLinksAccountId: settings.hostingPremiumLinksAccountId,
       premiumSitesAccountId: settings.hostingPremiumSitesAccountId,
+      // TASK_249 — the public proxy host + account pin.
+      publicLinkHost: settings.hostingPublicLinkHost,
+      publicLinksAccountId: settings.hostingPublicLinksAccountId,
     },
     // The Cloudflare per-asset ceiling is a HARD platform limit, not a dial — the
     // panel shows it so nobody sets pagesMaxAssetMb above it expecting it to hold.
@@ -188,14 +210,209 @@ function toPayload(settings: HostingSettingRow, live: LiveCounts) {
   };
 }
 
-export async function GET() {
+// TASK_249 — the per-purpose Cloudflare account the domain selector lists
+// zones for. Pure resolution lives in lib/hosting/domain-select.ts so the
+// files-→-links-pin fallback is unit-tested instead of re-implemented here.
+const PURPOSE_LABEL: Record<DomainPurpose, string> = {
+  links: "premium links",
+  sites: "premium sites",
+  public: "files & installer",
+};
+
+function purposePins(settings: HostingSettingRow): PurposeAccountPins {
+  return {
+    links: settings.hostingPremiumLinksAccountId?.trim() || null,
+    sites: settings.hostingPremiumSitesAccountId?.trim() || null,
+    public: settings.hostingPublicLinksAccountId?.trim() || null,
+  };
+}
+
+/**
+ * GET /api/admin/hosting/zones?purpose=links|sites|public[&accountId=<cf id>]
+ *
+ * Lists the active zones in the pinned Cloudflare account for a domain-selector
+ * purpose. `accountId` lets the panel preview the zones of an account it has
+ * selected but not saved yet (switching account + domain in one Apply).
+ * Tokens are decrypted on the fly and NEVER serialized in the response.
+ *
+ * Response shape: { accountId, label, zones[{id,name,status}], canListZones, error }
+ */
+async function handleZonesGet(
+  purpose: DomainPurpose,
+  requestedAccountId: string | null
+): Promise<NextResponse> {
+  const settings = await getAdminSettings();
+  const accountId =
+    requestedAccountId?.trim() ||
+    resolvePurposeAccount(purpose, purposePins(settings));
+
+  if (!accountId) {
+    return NextResponse.json({
+      accountId: null,
+      label: null,
+      zones: [],
+      canListZones: false,
+      error: `No Cloudflare account is pinned for ${PURPOSE_LABEL[purpose]}. Pick one, then Apply.`,
+    });
+  }
+
+  const row = await prisma.hostingPlatformAccount.findFirst({
+    where: { accountId },
+  });
+  if (!row) {
+    return NextResponse.json({
+      accountId,
+      label: null,
+      zones: [],
+      canListZones: false,
+      error: "The pinned Cloudflare account was not found.",
+    });
+  }
+
+  // Require the Workers/DNS token — without it we cannot list zones.
+  const workerToken = readWorkerToken(row);
+  if (!workerToken) {
+    return NextResponse.json({
+      accountId,
+      label: row.label,
+      zones: [],
+      canListZones: false,
+      error:
+        "This account has no Workers/DNS token. Add one in the admin panel to list zones.",
+    });
+  }
+
+  const cred: CfCredential = { accountId, token: workerToken };
+  const listed = await listActiveZones(cred);
+  if (!listed.ok) {
+    return NextResponse.json({
+      accountId,
+      label: row.label,
+      zones: [],
+      canListZones: false,
+      error: listed.error ?? "Could not list zones from Cloudflare.",
+    });
+  }
+
+  return NextResponse.json({
+    accountId,
+    label: row.label,
+    zones: (listed.value ?? []).map((z) => ({
+      id: z.id,
+      name: z.name,
+      status: z.status,
+    })),
+    canListZones: true,
+    error: null,
+  });
+}
+
+export async function GET(req?: Request) {
   const isAdmin = await requireAdminSession();
   if (!isAdmin) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
+  // TASK_249 — zone listing for the domain-selector dropdown. The request is
+  // optional (unit tests and any no-URL caller still get the settings payload).
+  let purpose: string | null = null;
+  let requestedAccountId: string | null = null;
+  try {
+    if (req) {
+      const params = new URL(req.url).searchParams;
+      purpose = params.get("purpose");
+      requestedAccountId = params.get("accountId");
+    }
+  } catch {
+    purpose = null;
+    requestedAccountId = null;
+  }
+  if (purpose === "links" || purpose === "sites" || purpose === "public") {
+    return handleZonesGet(purpose, requestedAccountId);
+  }
+
   const [settings, live] = await Promise.all([getAdminSettings(), liveCounts()]);
   return NextResponse.json(toPayload(settings, live));
+}
+
+
+/**
+ * Validate that a host being saved sits under an active zone in the pinned
+ * account for its purpose, and meets the depth/SSL rules for that purpose.
+ * Returns null when valid, or a plain-language 400 message naming the account
+ * and zone when it is not. Tokens are never in the message.
+ */
+async function validateHostZone(
+  purpose: DomainPurpose,
+  host: string,
+  settings: HostingSettingRow
+): Promise<string | null> {
+  // RESERVED_ZONES is a hard refusal everywhere, including admin PATCH.
+  if (isReservedZone(host)) {
+    return `${host} belongs to a reserved domain and cannot be used for hosting. Pick another domain.`;
+  }
+
+  // `*.workers.dev` is Cloudflare's own free host, not a zone in any account.
+  // TASK_157 Phase 3 supports it as the premium-LINK dev host (the admin value
+  // is a SUFFIX: swdocs.workers.dev), so it stays valid without a zone check.
+  const workersDev = normalizeHostInput(host);
+  if (
+    purpose === "links" &&
+    (workersDev === "workers.dev" || workersDev?.endsWith(".workers.dev"))
+  ) {
+    return null;
+  }
+
+  // The pin is read from the settings that WILL be stored (the caller merges the
+  // incoming pin over the saved one), so switching account + domain in one Apply
+  // validates against the account the admin just chose.
+  const accountId = resolvePurposeAccount(purpose, purposePins(settings));
+
+  if (!accountId) {
+    return `No Cloudflare account is pinned for ${PURPOSE_LABEL[purpose]}. Pick one, then Apply.`;
+  }
+
+  const row = await prisma.hostingPlatformAccount.findFirst({
+    where: { accountId },
+  });
+  if (!row) {
+    return `The pinned Cloudflare account (${accountId}) was not found.`;
+  }
+
+  const workerToken = readWorkerToken(row);
+  if (!workerToken) {
+    return `The pinned account (${accountId}) has no Workers/DNS token, so its zones cannot be checked. Add one in the admin panel.`;
+  }
+
+  const cred: CfCredential = { accountId, token: workerToken };
+  const listed = await listActiveZones(cred);
+  if (!listed.ok) {
+    return `Could not list zones for account ${accountId}: ${listed.error ?? "Cloudflare error."}`;
+  }
+
+  // Suffix match, NOT a last-two-labels guess: a zone can be deeper than two
+  // labels (example.co.uk), and the live zone list is the authority.
+  const normalized = normalizeHostInput(host);
+  if (!normalized) {
+    return `"${host}" is not a valid domain name.`;
+  }
+
+  const activeZone = (listed.value ?? []).find((z) => {
+    const name = z.name?.toLowerCase();
+    return !!name && (normalized === name || normalized.endsWith(`.${name}`));
+  });
+  if (!activeZone) {
+    return `${host} is not under an active zone in account ${accountId}. Add the domain to Cloudflare first, or choose a different domain.`;
+  }
+
+  const isApex = purpose === "sites";
+  if (!zoneMatchesHost(normalized, activeZone.name, isApex)) {
+    return isApex
+      ? `A premium site domain must be the zone apex itself ("${activeZone.name}"), not "${normalized}".`
+      : `A ${PURPOSE_LABEL[purpose]} host must be exactly one label under ${activeZone.name} (e.g. "go.${activeZone.name}"), not "${normalized}".`;
+  }
+
+  return null;
 }
 
 // PATCH — body: a SUBSET of { enabled?, provider?, freeStorageQuotaMb?,
@@ -209,6 +426,10 @@ export async function PATCH(req: Request) {
   if (!isAdmin) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
+
+  // TASK_249 — read settings once so PATCH-time zone validation can resolve
+  // the purpose's account pin without a second read.
+  const settings = await getAdminSettings();
 
   let body: Record<string, unknown>;
   try {
@@ -304,8 +525,81 @@ export async function PATCH(req: Request) {
     }
   }
 
+  // TASK_249 — the settings this PATCH will actually store: an incoming pin wins
+  // over the saved one, so switching account + domain in one Apply validates
+  // against the account the admin just chose (not the stale saved pin).
+  const effectiveSettings: HostingSettingRow = {
+    ...settings,
+    ...(typeof data.hostingPremiumLinksAccountId === "string"
+      ? { hostingPremiumLinksAccountId: data.hostingPremiumLinksAccountId }
+      : {}),
+    ...(typeof data.hostingPremiumSitesAccountId === "string"
+      ? { hostingPremiumSitesAccountId: data.hostingPremiumSitesAccountId }
+      : {}),
+    ...(typeof data.hostingPublicLinksAccountId === "string"
+      ? { hostingPublicLinksAccountId: data.hostingPublicLinksAccountId }
+      : {}),
+  };
+
+  // TASK_249 — async zone validation for host fields being patched.
+  // Runs after synchronous normalization so we validate the stored form.
+  const HOST_FIELD_PURPOSE: Record<
+    "publicLinkHost" | "siteDomain" | "linkDomain",
+    DomainPurpose
+  > = {
+    publicLinkHost: "public",
+    siteDomain: "sites",
+    linkDomain: "links",
+  };
+  for (const [key, purpose] of Object.entries(HOST_FIELD_PURPOSE)) {
+    const column = WRITABLE_FIELDS[key as keyof typeof WRITABLE_FIELDS].column;
+    const host = data[column];
+    if (typeof host !== "string" || host === "") continue;
+    const err = await validateHostZone(purpose, host, effectiveSettings);
+    if (err) {
+      return NextResponse.json({ error: err }, { status: 400 });
+    }
+  }
+
   if (Object.keys(data).length === 0) {
     return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
+  }
+
+  // TASK_249 — the public host change, if any. Provision BEFORE the upsert: a
+  // host the Worker cannot serve must never be stored, or every new file and
+  // installer link is born broken.
+  const oldPublicLinkHost = settings.hostingPublicLinkHost?.trim() || null;
+  const newPublicLinkHost =
+    typeof data.hostingPublicLinkHost === "string"
+      ? data.hostingPublicLinkHost
+      : undefined;
+  const oldPublicPin = settings.hostingPublicLinksAccountId?.trim() || null;
+  const newPublicPin =
+    typeof data.hostingPublicLinksAccountId === "string"
+      ? data.hostingPublicLinksAccountId.trim() || null
+      : oldPublicPin;
+  const publicPinChanged = newPublicPin !== oldPublicPin;
+
+  let provisionResult:
+    | { ok: boolean; host: string; error: string | null; warning?: string }
+    | null = null;
+  if (
+    newPublicLinkHost &&
+    (newPublicLinkHost !== oldPublicLinkHost || publicPinChanged)
+  ) {
+    const result = await provisionPublicHost(newPublicLinkHost, {
+      accountId: newPublicPin,
+    });
+    provisionResult = { ok: result.ok, host: result.host, error: result.error };
+    if (!result.ok) {
+      return NextResponse.json(
+        {
+          error: `Could not provision ${newPublicLinkHost}: ${result.error ?? "unknown error"}`,
+          provisionResult,
+        },
+        { status: 400 }
+      );
+    }
   }
 
   // Same upsert-into-singleton pattern getAdminSettings() uses, so the very first
@@ -316,7 +610,34 @@ export async function PATCH(req: Request) {
     create: data,
   });
 
+  // The 60s base cache must not keep serving the old host after the admin
+  // changed it in this same process.
+  resetPublicBaseCache();
+
+  // Detach the previous host only AFTER the new one is saved and live. Best
+  // effort: a leftover route is harmless; failing the save over it is not.
+  if (
+    newPublicLinkHost !== undefined &&
+    oldPublicLinkHost &&
+    oldPublicLinkHost !== newPublicLinkHost
+  ) {
+    const torn = await teardownPublicHost(oldPublicLinkHost, {
+      accountId: oldPublicPin,
+    });
+    if (!torn.ok && provisionResult) {
+      provisionResult = {
+        ...provisionResult,
+        warning: `The old host ${oldPublicLinkHost} was not fully removed: ${
+          torn.error ?? "unknown error"
+        }`,
+      };
+    }
+  }
+
   const live = await liveCounts();
-  return NextResponse.json(toPayload(updated, live));
+  return NextResponse.json({
+    ...toPayload(updated, live),
+    provisionResult,
+  });
 }
 

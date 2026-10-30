@@ -1069,9 +1069,15 @@ test("A2: the other ten appBaseUrl call sites are untouched — this task change
   assert.equal(
     (codeOnly.match(/env\.appBaseUrl/g) ?? []).length,
     0,
-    "lib/vantra-link.ts's only base-URL read must be env.publicLinkBaseUrl, not env.appBaseUrl",
+    "lib/vantra-link.ts must never fall back to env.appBaseUrl for installer links",
   );
-  assert.ok(codeOnly.includes("env.publicLinkBaseUrl"), "the one call site this task touches");
+  // TASK_249 moved the host behind ONE resolver (AdminSetting override, else
+  // PUBLIC_LINK_BASE_URL, else APP_BASE_URL) so /hf/* and /link/vantra/* share
+  // a public host. It must still never be the bare app host.
+  assert.ok(
+    codeOnly.includes("getPublicLinkHost"),
+    "installer links resolve through getPublicLinkHost()"
+  );
 });
 
 // ---------------------------------------------------------------------------

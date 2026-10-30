@@ -104,6 +104,28 @@ loader._load = function patched(request, parent, isMain) {
     if (request === "@/lib/hosting/providers") {
       return { listProviders: () => [{ id: "local" }, { id: "cloudflare" }] };
     }
+    // TASK_249 — the route now imports these; both reach Prisma/server-only at
+    // module load, which this unit test deliberately does not boot. None of the
+    // pin assertions below touch a zone or the public proxy.
+    if (request === "@/lib/hosting/credentials") {
+      return { readWorkerToken: () => null };
+    }
+    if (request === "@/lib/hosting/public-proxy") {
+      return {
+        provisionPublicHost: async (host: string) => ({
+          ok: true,
+          host,
+          zoneId: null,
+          zoneName: null,
+          dnsCreated: false,
+          error: null,
+        }),
+        teardownPublicHost: async (host: string) => ({ ok: true, host, error: null }),
+      };
+    }
+    if (request === "@/lib/hosting/public-bases") {
+      return { resetPublicBaseCache: () => {} };
+    }
   }
   return originalLoad.call(this, request, parent, isMain);
 };

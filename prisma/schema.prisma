@@ -590,6 +590,22 @@ model AdminSetting {
   hostingPremiumLinksAccountId String @default("")
   hostingPremiumSitesAccountId String @default("")
 
+  // TASK_249 — platform domain selectors (Cloudflare zones).
+  //
+  // hostingPublicLinkHost = the ONE public host behind /hf/* (file downloads)
+  // and /link/vantra/* (installer links), served by the sw-public-proxy Worker
+  // on that host. Empty = each family keeps its own env base
+  // (PUBLIC_LINK_BASE_URL / HOSTING_PUBLIC_BASE_URL), byte-for-byte unchanged.
+  // A host here is meaningless until provisionPublicHost() has published the
+  // Worker route for it — the admin panel provisions on Apply.
+  hostingPublicLinkHost String?
+
+  // Pins the Cloudflare account the public proxy publishes to. Resolution:
+  // this files/installer pin → the premium LINKS pin
+  // (hostingPremiumLinksAccountId) → automatic priority rotation. Empty = fall
+  // through the chain. 32-hex account id shape, validated at PATCH time.
+  hostingPublicLinksAccountId String?
+
   // TASK_156 C1 (scaffolding, owner 2026-10-01) — the Cyber Lab's dials belong on
   // AdminSetting from day one (CROSS-TRACK RULE 7; PLAN_TASK_156 §7 C1). The owner
   // asked for "all caps for the workers and cyberlab ... available for edit in

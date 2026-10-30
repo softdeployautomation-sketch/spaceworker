@@ -1,13 +1,13 @@
 import { NextResponse } from "next/server";
 
 import { getAdminSettings } from "@/lib/admin-settings";
-import { hasEntitlement } from "@/lib/entitlements";
 import { env } from "@/lib/env";
+import { hasEntitlement } from "@/lib/entitlements";
 import { getCurrentUser } from "@/lib/session-user";
 import { readUsage, resolveCapsForUser } from "@/lib/hosting/files";
 import { listHostingCredentials, countSitesByCredential } from "@/lib/hosting/credentials";
+import { getFileBaseUrl } from "@/lib/hosting/public-bases";
 import { listProviders } from "@/lib/hosting/providers";
-import { hostingPublicBase } from "@/lib/hosting/providers";
 import { listHostedLinks } from "@/lib/hosting/links";
 import { healthyPlatformAccountCount } from "@/lib/hosting/platform-accounts";
 
@@ -25,6 +25,7 @@ export async function GET() {
   }
 
   const [settings, decision] = await Promise.all([getAdminSettings(), hasEntitlement(user.id, "hosting")]);
+  const fileBase = await getFileBaseUrl();
   const entitled = decision.allowed;
   const { caps, premium } = await resolveCapsForUser(user.id);
   const [usage, links, credentials, siteCounts, platformHealthy] = await Promise.all([
@@ -44,10 +45,11 @@ export async function GET() {
     entitlementReason: decision.reason,
     provider: caps.provider,
     providers: listProviders(),
-    publicBase: hostingPublicBase(),
+    publicBase: fileBase,
     // TASK_155 P2 — where a user-owned /r/<slug|token> short link resolves. This
-    // is the APP host (the same base Task 30 campaign links use), NOT the file
-    // host: files are served from `publicBase`, short links from here.
+    // is the APP host (the same base Task 30 campaign links use), NOT the shared
+    // files/installer proxy host: the proxy forwards only /hf/* and
+    // /link/vantra/*, so pointing short links at it would 404 them (TASK_249).
     linksBase: env.publicLinkBaseUrl,
     caps: {
       storageQuotaMb: caps.storageQuotaMb,
