@@ -2200,14 +2200,18 @@ type HostingCapsState = {
   provider: string;
   providers: Array<{ id: string; label: string; implemented: boolean }>;
   caps: HostingCaps;
-  // TASK_157 Phase 1 — the premium domain registry. An empty string is the
-  // documented "premium off" state: every user keeps the free Cloudflare host.
-  // `siteDomainCoversSsl` is computed SERVER-side (it depends on Cloudflare's
-  // certificate rules, not on anything the browser can know) so the warning below
-  // can never disagree with what the API actually accepted.
-  domains: { siteDomain: string; linkDomain: string; siteDomainCoversSsl: boolean };
+  domains: {
+    siteDomain: string;
+    linkDomain: string;
+    siteDomainCoversSsl: boolean;
+    premiumLinksAccountId: string;
+    premiumSitesAccountId: string;
+    publicLinkHost: string;
+    publicLinksAccountId: string;
+  };
   hardPagesMaxAssetMb: number;
   live: { activeFiles: number; storageBytes: number; owners: number; sites: number };
+  provisionResult: { ok: boolean; host: string; error: string | null } | null;
 };
 
 type HostingCapField = keyof HostingCaps;
@@ -2351,34 +2355,77 @@ const HOSTING_CAP_ROWS: Array<{
 ];
 
 
-// TASK_157 Phase 1 — the two premium DOMAIN dials, rendered from data the same
-// way the caps above are, so the API and the UI cannot drift on what a row means.
-//
-// Both are OPTIONAL and both share one rule the owner asked for explicitly: the
-// free Cloudflare host is always kept as the fallback, so clearing a box is a
-// safe, reversible action rather than a way to break every published link.
-type PremiumDomainField = "siteDomain" | "linkDomain";
+// TASK_249 — the shared public host behind /hf/* + /link/vantra/*,
+// served by the sw-public-proxy Worker. The domain card below lets the owner
+// pick, for each purpose, the Cloudflare account pin, the zone to publish
+// under, and the label (go / dl). Manual entry is retained as fallback.
+interface PlatformAccount {
+  id: string;
+  accountId: string;
+  label: string;
+}
 
-const PREMIUM_DOMAIN_ROWS: Array<{
-  field: PremiumDomainField;
+interface ZoneOption {
+  id: string;
+  name: string;
+  status: string;
+}
+
+interface ProvisionResult {
+  ok: boolean;
+  host: string;
+  error: string | null;
+  warning?: string;
+}
+
+type DomainPurpose = "links" | "sites" | "public";
+
+const DOMAIN_ROWS: Array<{
+  purpose: DomainPurpose;
+  field: "linkDomain" | "siteDomain" | "publicLinkHost";
+  accountField:
+    | "premiumLinksAccountId"
+    | "premiumSitesAccountId"
+    | "publicLinksAccountId";
   label: string;
   unit: string;
   hint: string;
   placeholder: string;
+  defaultLabel: string;
+  isApex: boolean;
 }> = [
   {
-    field: "siteDomain",
-    label: "Premium site domain",
-    unit: "a zone — e.g. instaweb.top",
-    hint: "A premium site is published as <slug>.<this>. It must be an apex zone in the SAME Cloudflare account as the Pages project, or the domain can never activate. Empty = premium sites use the free <project>.pages.dev host.",
-    placeholder: "instaweb.top",
+    purpose: "links",
+    field: "linkDomain",
+    accountField: "premiumLinksAccountId",
+    label: "Premium links",
+    unit: "host — e.g. go.instaweb.top",
+    hint: "Where premium redirect links publish. Must be label.apex (depth 2) in the pinned account's active zone.",
+    placeholder: "go.instaweb.top",
+    defaultLabel: "go",
+    isApex: false,
   },
   {
-    field: "linkDomain",
-    label: "Premium link host",
-    unit: "a host — e.g. go.instaweb.top",
-    hint: "Where premium redirect links publish. A zoned host (go.instaweb.top) becomes the Worker route and needs DNS. Or name a workers.dev host (swdocs.workers.dev) and each user publishes to <worker>.swdocs.workers.dev with no DNS or route at all. Empty = fall back to go.<zone>.",
-    placeholder: "go.instaweb.top",
+    purpose: "sites",
+    field: "siteDomain",
+    accountField: "premiumSitesAccountId",
+    label: "Premium sites",
+    unit: "zone — e.g. instaweb.top",
+    hint: "A premium site publishes as <slug>.<this>. Must be the zone apex in the pinned account's active zone.",
+    placeholder: "instaweb.top",
+    defaultLabel: "",
+    isApex: true,
+  },
+  {
+    purpose: "public",
+    field: "publicLinkHost",
+    accountField: "publicLinksAccountId",
+    label: "Files & installer",
+    unit: "host — e.g. dl.instaweb.top",
+    hint: "The shared host behind /hf/* (file downloads) and /link/vantra/* (installer links). Must be label.apex (depth 2). Provisioned automatically on Apply.",
+    placeholder: "dl.instaweb.top",
+    defaultLabel: "dl",
+    isApex: false,
   },
 ];
 
@@ -2387,13 +2434,53 @@ function HostingCapsPanel() {
   const [error, setError] = useState("");
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState<string | null>(null);
+  const [accounts, setAccounts] = useState<PlatformAccount[]>([]);
+  const [zonesByPurpose, setZonesByPurpose] = useState<Record<string, ZoneOption[]>>(
+    {}
+  );
+  const [zonesLoading, setZonesLoading] = useState<Record<string, boolean>>({});
+  const [zonesError, setZonesError] = useState<Record<string, string>>({});
+  const [labels, setLabels] = useState<Record<string, string>>({});
+  const [applying, setApplying] = useState<Record<string, boolean>>({});
+  const [selectedZoneByPurpose, setSelectedZoneByPurpose] = useState<Record<string, string>>(
+    {}
+  );
+  const [selectedAccountByPurpose, setSelectedAccountByPurpose] = useState<Record<string, string>>(
+    {}
+  );
+  const [canListZonesByPurpose, setCanListZonesByPurpose] = useState<Record<string, boolean>>({});
+  const [lastProvision, setLastProvision] = useState<{
+    field: string;
+    result: ProvisionResult;
+  } | null>(null);
 
   const load = useCallback(async () => {
     setError("");
     try {
-      const res = await fetch("/api/admin/hosting");
-      if (!res.ok) throw new Error("Failed to load hosting limits");
-      setState((await res.json()) as HostingCapsState);
+      const [hostingRes, accountsRes] = await Promise.all([
+        fetch("/api/admin/hosting"),
+        fetch("/api/admin/hosting/platform-accounts"),
+      ]);
+      if (!hostingRes.ok) throw new Error("Failed to load hosting limits");
+      if (!accountsRes.ok) throw new Error("Failed to load platform accounts");
+      const [hostingData, accountsData] = await Promise.all([
+        hostingRes.json(),
+        accountsRes.json(),
+      ]);
+      setState(hostingData as HostingCapsState);
+      setAccounts((accountsData.accounts ?? []) as PlatformAccount[]);
+      // Initialise labels and account pins from saved values.
+      const nextLabels: Record<string, string> = {};
+      const nextAccounts: Record<string, string> = {};
+      for (const row of DOMAIN_ROWS) {
+        const saved = hostingData.domains[row.field];
+        nextLabels[row.field] = saved
+          ? saved.split(".")[0] ?? row.defaultLabel
+          : row.defaultLabel;
+        nextAccounts[row.purpose] = hostingData.domains[row.accountField] ?? "";
+      }
+      setLabels(nextLabels);
+      setSelectedAccountByPurpose(nextAccounts);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load hosting limits");
     }
@@ -2402,6 +2489,25 @@ function HostingCapsPanel() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // TASK_249 — fetch zones for each purpose once the hosting state (and its
+  // account pins) is loaded. Refetches whenever the pins change.
+  useEffect(() => {
+    if (!state) return;
+    const purposes: DomainPurpose[] = ["links", "sites", "public"];
+    const accountByPurpose: Record<DomainPurpose, string | undefined> = {
+      links: state.domains.premiumLinksAccountId || undefined,
+      sites: state.domains.premiumSitesAccountId || undefined,
+      public: state.domains.publicLinksAccountId || undefined,
+    };
+    for (const purpose of purposes) {
+      const accountId = selectedAccountByPurpose[purpose] || accountByPurpose[purpose];
+      if (accountId) void fetchZones(purpose, accountId);
+    }
+    // Refetch when the hosting state reloads; an account change refetches from
+    // the select's onChange. fetchZones is re-created per render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state]);
 
   // The route returns the whole state back, so one PATCH refreshes everything
   // (caps AND live counts) without a second round-trip.
@@ -2429,6 +2535,119 @@ function HostingCapsPanel() {
       setError("Network error");
     } finally {
       setSaving(null);
+    }
+  }
+
+  // TASK_249 — fetch the active zones for a purpose + pinned account.
+  async function fetchZones(purpose: DomainPurpose, accountId: string) {
+    setZonesLoading((prev) => ({ ...prev, [purpose]: true }));
+    setZonesError((prev) => ({ ...prev, [purpose]: "" }));
+    try {
+      const res = await fetch(
+        `/api/admin/hosting/zones?purpose=${purpose}&accountId=${encodeURIComponent(accountId)}`
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setZonesError((prev) => ({ ...prev, [purpose]: typeof data.error === "string" ? data.error : "Failed to load zones" }));
+        setZonesByPurpose((prev) => ({ ...prev, [purpose]: [] }));
+        return;
+      }
+      const zones = (data.zones ?? []) as ZoneOption[];
+      setZonesByPurpose((prev) => ({ ...prev, [purpose]: zones }));
+      setCanListZonesByPurpose((prev) => ({ ...prev, [purpose]: Boolean(data.canListZones) }));
+      // Auto-select the first zone if none chosen yet.
+      if (zones.length > 0 && !selectedZoneByPurpose[purpose]) {
+        setSelectedZoneByPurpose((prev) => ({ ...prev, [purpose]: zones[0].id }));
+      }
+    } catch {
+      setZonesError((prev) => ({ ...prev, [purpose]: "Network error" }));
+      setZonesByPurpose((prev) => ({ ...prev, [purpose]: [] }));
+    } finally {
+      setZonesLoading((prev) => ({ ...prev, [purpose]: false }));
+    }
+  }
+
+  // TASK_249 — apply one domain row: patch account + host, then show provision result.
+  async function applyDomain(row: (typeof DOMAIN_ROWS)[number]) {
+    const field = row.field;
+    const accountField = row.accountField;
+    setApplying((prev) => ({ ...prev, [field]: true }));
+    setError("");
+
+    if (!state) {
+      setError("Hosting state not loaded.");
+      setApplying((prev) => ({ ...prev, [field]: false }));
+      return;
+    }
+    const accountId = selectedAccountByPurpose[row.purpose] || state.domains[accountField];
+    const zones = zonesByPurpose[row.purpose];
+    const zoneId = selectedZoneByPurpose[row.purpose];
+    const zone = zones.find((z) => z.id === zoneId);
+    if (!zone) {
+      setError(`${row.label}: please select a zone.`);
+      setApplying((prev) => ({ ...prev, [field]: false }));
+      return;
+    }
+
+    const label = (labels[field] ?? row.defaultLabel).trim();
+    const host = row.isApex ? zone.name : `${label}.${zone.name}`;
+
+    const body: Record<string, string> = {};
+    body[field] = host;
+    body[accountField] = accountId;
+
+    try {
+      const res = await fetch("/api/admin/hosting", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : "Failed to update");
+        if (data.provisionResult) {
+          setLastProvision({ field, result: data.provisionResult as ProvisionResult });
+        }
+        return;
+      }
+      setState(data as HostingCapsState);
+      setLabels((prev) => ({ ...prev, [field]: label }));
+      if (data.provisionResult) {
+        setLastProvision({ field, result: data.provisionResult as ProvisionResult });
+      } else if (row.purpose === "public") {
+        setLastProvision(null);
+      }
+    } catch {
+      setError("Network error");
+    } finally {
+      setApplying((prev) => ({ ...prev, [field]: false }));
+    }
+  }
+
+  // TASK_249 — unset a host: the resolver falls back to its env base, and for
+  // the files/installer row the route also tears the Worker route down.
+  async function clearDomain(row: (typeof DOMAIN_ROWS)[number]) {
+    const field = row.field;
+    setApplying((prev) => ({ ...prev, [field]: true }));
+    setError("");
+    try {
+      const res = await fetch("/api/admin/hosting", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [field]: "" }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : "Failed to clear");
+        return;
+      }
+      setState(data as HostingCapsState);
+      setLabels((prev) => ({ ...prev, [field]: row.defaultLabel }));
+      setLastProvision(null);
+    } catch {
+      setError("Network error");
+    } finally {
+      setApplying((prev) => ({ ...prev, [field]: false }));
     }
   }
 
@@ -2541,21 +2760,27 @@ function HostingCapsPanel() {
             );
           })}
 
-          {/* TASK_157 Phase 1 — the premium domain registry. Rendered after the caps
-              because it is not a cap: it is a switch between two URL models, and the
-              numeric caps above apply to both models. */}
+          {/* TASK_249 — domain selectors: account pin + zone dropdown + label
+              for each public-facing host. Replaces the TASK_157 text-input
+              rows with Cloudflare-zone-driven dropdowns. */}
           <div className="rounded-xl border border-amber-300 bg-amber-50/40 p-4 dark:border-amber-800 dark:bg-amber-950/20">
-            <p className="font-medium text-zinc-900 dark:text-zinc-100">Premium domains</p>
+            <p className="font-medium text-zinc-900 dark:text-zinc-100">
+              Domain selectors
+            </p>
             <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
-              Free accounts always keep their Cloudflare host — these two boxes only change what a PREMIUM account
-              publishes under. Clearing a box is safe: the resolver falls back to the free host, so a published URL never
-              ends up pointing nowhere.
+              Pick the Cloudflare account and zone each host publishes under.
+              Free accounts always keep their Cloudflare host — these rows only
+              change what PREMIUM publishes under.
             </p>
             <div className="mt-3 flex flex-col gap-3">
-              {PREMIUM_DOMAIN_ROWS.map((row) => {
+              {DOMAIN_ROWS.map((row) => {
                 const saved = state.domains[row.field];
-                const draft = drafts[row.field];
-                const dirty = draft !== undefined && draft.trim() !== saved;
+                const zones = zonesByPurpose[row.purpose] ?? [];
+                const canList = canListZonesByPurpose[row.purpose] ?? false;
+                const selectedAcct = selectedAccountByPurpose[row.purpose] || state.domains[row.accountField] || "";
+                const isApplying = applying[row.field];
+                const provisionForThis = lastProvision?.field === row.field ? lastProvision.result : null;
+
                 return (
                   <div
                     key={row.field}
@@ -2579,29 +2804,83 @@ function HostingCapsPanel() {
                             : "Not an apex domain — site URLs would sit too deep for Cloudflare's free certificate."}
                         </p>
                       )}
+                      {!canList && zones.length === 0 && (
+                        <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                          {zonesError[row.purpose]
+                            ? zonesError[row.purpose]
+                            : selectedAcct
+                              ? "This account's token cannot list zones. Add a Workers/DNS token to the account, or add the domain there."
+                              : "Pick a Cloudflare account for this purpose first."}
+                        </p>
+                      )}
                     </div>
                     <div className="flex items-center gap-2">
-                      <input
-                        type="text"
-                        placeholder={`${row.placeholder} — empty = off`}
-                        value={draft ?? saved}
-                        onChange={(e) => setDrafts((prev) => ({ ...prev, [row.field]: e.target.value }))}
-                        className="w-56 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
-                      />
-                      <button
-                        onClick={() => patch(row.field, { [row.field]: (draft ?? saved).trim() })}
-                        disabled={saving === row.field || !dirty}
-                        className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-100 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                      <select
+                        value={selectedAcct}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setSelectedAccountByPurpose((prev) => ({ ...prev, [row.purpose]: v }));
+                          setSelectedZoneByPurpose((prev) => ({ ...prev, [row.purpose]: "" }));
+                          // A different (or blank) account means these zones are stale.
+                          setZonesByPurpose((prev) => ({ ...prev, [row.purpose]: [] }));
+                          setCanListZonesByPurpose((prev) => ({ ...prev, [row.purpose]: false }));
+                          setZonesError((prev) => ({ ...prev, [row.purpose]: "" }));
+                          if (v) void fetchZones(row.purpose, v);
+                        }}
+                        className="rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
                       >
-                        Save
+                        <option value="">
+                          {row.purpose === "public"
+                            ? "Same as premium links"
+                            : "Automatic (priority order)"}
+                        </option>
+                        {accounts.map((a) => (
+                          <option key={a.accountId} value={a.accountId}>{a.label} ({a.accountId})</option>
+                        ))}
+                      </select>
+                      <select
+                        value={selectedZoneByPurpose[row.purpose] ?? ""}
+                        onChange={(e) => setSelectedZoneByPurpose((prev) => ({ ...prev, [row.purpose]: e.target.value }))}
+                        disabled={zones.length === 0 || zonesLoading[row.purpose]}
+                        className="rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                      >
+                        {zonesLoading[row.purpose] && <option disabled>Loading zones…</option>}
+                        {zones.map((z) => (
+                          <option key={z.id} value={z.id}>{z.name} ({z.status})</option>
+                        ))}
+                        {!zonesLoading[row.purpose] && zones.length === 0 && <option disabled>No zones</option>}
+                      </select>
+                      {!row.isApex && (
+                        <input
+                          type="text"
+                          placeholder={row.defaultLabel || "label"}
+                          value={labels[row.field] ?? row.defaultLabel ?? ""}
+                          onChange={(e) => setLabels((prev) => ({ ...prev, [row.field]: e.target.value }))}
+                          className="w-28 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                        />
+                      )}
+                      <button
+                        onClick={() => void applyDomain(row)}
+                        disabled={isApplying || !selectedZoneByPurpose[row.purpose] || !selectedAcct}
+                        className={`rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium transition-colors hover:bg-zinc-100 disabled:opacity-40 dark:border-zinc-700 dark:hover:bg-zinc-800 ${isApplying ? "bg-zinc-200 dark:bg-zinc-800" : "text-zinc-600 dark:text-zinc-400"}`}
+                      >
+                        {isApplying ? "Applying…" : "Apply"}
                       </button>
                       <button
-                        onClick={() => patch(row.field, { [row.field]: "" })}
-                        disabled={saving === row.field || !saved}
+                        onClick={() => void clearDomain(row)}
+                        disabled={isApplying || !saved}
+                        title="Unset this host and fall back to the env default"
                         className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-500 transition-colors hover:bg-zinc-100 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
                       >
                         Clear
                       </button>
+                      {provisionForThis && (
+                        <span className={`text-xs font-medium ${provisionForThis.ok ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
+                          {provisionForThis.ok
+                            ? `Provisioned: ${provisionForThis.host}${provisionForThis.warning ? ` — ${provisionForThis.warning}` : ""}`
+                            : `Provision failed: ${provisionForThis.error}`}
+                        </span>
+                      )}
                     </div>
                   </div>
                 );

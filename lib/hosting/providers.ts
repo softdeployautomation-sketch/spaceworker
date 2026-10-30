@@ -5,6 +5,7 @@ import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
 import { HOSTING_PROVIDER_LABELS, type HostingProviderId } from "./rules";
+import { getFileBaseUrl } from "./public-bases";
 
 // TASK_155 P1 — the storage providers behind ONE interface. The owner asked for
 // "multi options available ... host the file directly to Cloudflare or [an]
@@ -55,7 +56,7 @@ export interface HostingProvider {
   put(input: PutInput): Promise<PutResult>;
   read(ref: ObjectRef): Promise<ReadableStream<Uint8Array>>;
   remove(ref: ObjectRef): Promise<void>;
-  publicUrl(token: string): string;
+  publicUrl(token: string): Promise<string>;
 }
 
 /** Thrown when a known-but-unbuilt provider (cloudflare/external) is selected. */
@@ -99,8 +100,8 @@ const localProvider: HostingProvider = {
   implemented: true,
   // No provider ceiling — the AdminSetting per-file cap is the only limit on our
   // own disk (bounded by hostingFreeMaxFileSizeMb, default 512 MB).
-  publicUrl(token: string): string {
-    return `${hostingPublicBase()}/hf/${token}`;
+  publicUrl(token: string): Promise<string> {
+    return getFileBaseUrl().then((base) => `${base}/hf/${token}`);
   },
   async put({ token, userId, body }: PutInput): Promise<PutResult> {
     const dir = path.join(hostingStorageRoot(), safeSegment(userId));
@@ -135,7 +136,7 @@ const localProvider: HostingProvider = {
     return {
       storagePath: finalPath,
       externalId: null,
-      url: this.publicUrl(token),
+      url: await this.publicUrl(token),
       bytes,
       sha256: hash.digest("hex"),
     };
@@ -159,8 +160,8 @@ function pendingProvider(id: HostingProviderId): HostingProvider {
     id,
     label: HOSTING_PROVIDER_LABELS[id],
     implemented: false,
-    publicUrl(token: string) {
-      return `${hostingPublicBase()}/hf/${token}`;
+    publicUrl(token: string): Promise<string> {
+      return getFileBaseUrl().then((base) => `${base}/hf/${token}`);
     },
     async put() {
       return notReady();
