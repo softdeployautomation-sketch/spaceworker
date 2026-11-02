@@ -13,6 +13,7 @@ const ROUTE = "/app/api/admin/hosting/route.ts";
 
 const LINKS_PIN = "2222222222222222222222222222222a";
 const PUBLIC_PIN = "43b24dc00bea90102ede000000000000";
+const MULTI_PIN = "9bc97c44fc72505e6f9f413c568ffa7b";
 
 let settings: Record<string, unknown> = {};
 let upserts: Array<Record<string, unknown>> = [];
@@ -20,6 +21,27 @@ let order: string[] = [];
 let provisionOk = true;
 let provisionPin: string | null | undefined;
 let zonesByAccount: Record<string, Array<{ id: string; name: string; status: string }>> = {};
+let rowsByAccount: Record<string, Array<Record<string, unknown>>> = {};
+let deadTokens = new Set<string>();
+
+function accountRow(
+  accountId: string,
+  label: string,
+  extra: Record<string, unknown> = {}
+): Record<string, unknown> {
+  return {
+    accountId,
+    label,
+    tokenCiphertext: "enc",
+    tokenIv: "iv",
+    tokenTag: "tag",
+    workerTokenCiphertext: "enc",
+    workerTokenIv: "iv",
+    workerTokenTag: "tag",
+    zoneTokenCiphertext: null,
+    ...extra,
+  };
+}
 
 function bridge(extra: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -69,10 +91,9 @@ const prismaStub = {
   },
   hostingSite: { count: async () => 0 },
   hostingPlatformAccount: {
-    findFirst: async (args: { where?: { accountId?: string } }) => {
+    findMany: async (args: { where?: { accountId?: string } }) => {
       const id = args?.where?.accountId;
-      if (!id) return null;
-      return { accountId: id, label: `acct-${id.slice(0, 4)}`, workerTokenCiphertext: "enc" };
+      return id ? rowsByAccount[id] ?? [] : [];
     },
   },
   adminSetting: {
@@ -96,14 +117,24 @@ loader._load = function patched(request, parent, isMain) {
     if (request === "@/lib/prisma") return { prisma: prismaStub };
     if (request === "@/lib/hosting/rules") return { CLOUDFLARE_HARD_ASSET_MB: 25 };
     if (request === "@/lib/hosting/providers") return { listProviders: () => [] };
-    if (request === "@/lib/hosting/credentials") return { readWorkerToken: () => "tok" };
+    if (request === "@/lib/hosting/credentials") {
+      return {
+        // The real helpers decrypt Prisma columns; the stub rows carry the
+        // decrypted value under a synthetic field so a row can model exactly
+        // which slots are readable/dead.
+        readWorkerToken: (row: Record<string, unknown>) => row.workerTokenValue ?? null,
+        readMainToken: (row: Record<string, unknown>) => row.mainTokenValue ?? null,
+        readZoneToken: (row: Record<string, unknown>) => row.zoneTokenValue ?? null,
+      };
+    }
     if (request === "@/lib/hosting/workers") {
       return {
-        listActiveZones: async (cred: { accountId: string }) => ({
-          ok: true,
-          status: 200,
-          value: zonesByAccount[cred.accountId] ?? [],
-        }),
+        listActiveZones: async (cred: { accountId: string; token: string }) => {
+          if (deadTokens.has(cred.token)) {
+            return { ok: false, status: 403, value: null, error: "Invalid access token" };
+          }
+          return { ok: true, status: 200, value: zonesByAccount[cred.accountId] ?? [] };
+        },
         isReservedZone: (host: string) => host.endsWith("broks.beauty"),
       };
     }
@@ -148,11 +179,29 @@ beforeEach(() => {
   order = [];
   provisionOk = true;
   provisionPin = undefined;
+  deadTokens = new Set(["dead-worker"]);
   zonesByAccount = {
     [LINKS_PIN]: [{ id: "z1", name: "instaweb.top", status: "active" }],
     [PUBLIC_PIN]: [
       { id: "z1", name: "instaweb.top", status: "active" },
       { id: "z2", name: "mainstreetmint.sbs", status: "active" },
+    ],
+    [MULTI_PIN]: [
+      { id: "z3", name: "mainstreetmint.sbs", status: "active" },
+      { id: "z4", name: "mainstreetmint.work", status: "active" },
+    ],
+  };
+  rowsByAccount = {
+    [LINKS_PIN]: [accountRow(LINKS_PIN, "acct-links", { workerTokenValue: "tok" })],
+    [PUBLIC_PIN]: [accountRow(PUBLIC_PIN, "acct-public", { workerTokenValue: "tok" })],
+    // TASK_251 — the production shape: two rows for one account, the first row's
+    // Workers token is dead while its main token still works.
+    [MULTI_PIN]: [
+      accountRow(MULTI_PIN, "mainstreet.sbs", {
+        workerTokenValue: "dead-worker",
+        mainTokenValue: "tok-main",
+      }),
+      accountRow(MULTI_PIN, "mainstreet.work", { mainTokenValue: "tok-work" }),
     ],
   };
 });
@@ -220,4 +269,44 @@ test("zones GET honours an explicit accountId and never returns a token", async 
   assert.equal(body.canListZones, true);
   assert.ok(Array.isArray(body.zones));
   assert.ok(!JSON.stringify(body).includes("tok"));
+});
+
+test("TASK_251: a dead Workers token falls through to the row's main token", async () => {
+  const res = await route.GET(
+    new Request(`https://spaceworker.test/api/admin/hosting?purpose=sites&accountId=${MULTI_PIN}`)
+  );
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as {
+    canListZones: boolean;
+    label: string;
+    zones: Array<{ name: string }>;
+  };
+  assert.equal(body.canListZones, true);
+  assert.equal(body.label, "mainstreet.sbs");
+  assert.deepEqual(
+    body.zones.map((z) => z.name).sort(),
+    ["mainstreetmint.sbs", "mainstreetmint.work"]
+  );
+  assert.ok(!JSON.stringify(body).includes("tok"));
+});
+
+test("TASK_251: a dead Workers token does not block PATCH validation", async () => {
+  const res = await route.PATCH(
+    patchRequest({ siteDomain: "mainstreetmint.sbs", premiumSitesAccountId: MULTI_PIN })
+  );
+  assert.equal(res.status, 200);
+  assert.equal(upserts.length, 1);
+  assert.equal(upserts[0].hostingPremiumSiteDomain, "mainstreetmint.sbs");
+});
+
+test("TASK_251: when every readable token is refused, the PATCH fails closed", async () => {
+  deadTokens.add("tok-main");
+  deadTokens.add("tok-work");
+  const res = await route.PATCH(
+    patchRequest({ siteDomain: "mainstreetmint.sbs", premiumSitesAccountId: MULTI_PIN })
+  );
+  assert.equal(res.status, 400);
+  const body = (await res.json()) as { error: string };
+  assert.match(body.error, /Invalid access token/);
+  assert.equal(upserts.length, 0);
 });

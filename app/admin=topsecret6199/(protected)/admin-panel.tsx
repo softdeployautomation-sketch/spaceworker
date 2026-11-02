@@ -2544,7 +2544,7 @@ function HostingCapsPanel() {
     setZonesError((prev) => ({ ...prev, [purpose]: "" }));
     try {
       const res = await fetch(
-        `/api/admin/hosting/zones?purpose=${purpose}&accountId=${encodeURIComponent(accountId)}`
+        `/api/admin/hosting?purpose=${purpose}&accountId=${encodeURIComponent(accountId)}`
       );
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {

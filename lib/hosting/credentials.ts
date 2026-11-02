@@ -221,6 +221,26 @@ export function readWorkerToken(row: {
   }
 }
 
+/**
+ * TASK_251 — decrypt a row's MAIN (Pages) API token, or null when it is absent
+ * or unreadable. Zone listing may fall back to this token when the separate
+ * Workers/DNS token is dead, which is the normal state for an account added with
+ * one account-scoped token. Deliberately does NOT throw: an unreadable row must
+ * read as "no token", not take the admin route down.
+ */
+export function readMainToken(row: {
+  tokenCiphertext: string | null;
+  tokenIv: string | null;
+  tokenTag: string | null;
+}): string | null {
+  if (!row.tokenCiphertext || !row.tokenIv || !row.tokenTag) return null;
+  try {
+    return decryptSecret(row.tokenCiphertext, row.tokenIv, row.tokenTag);
+  } catch {
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // TASK_158 W0 — the ZONES token, the THIRD Cloudflare credential.
 //

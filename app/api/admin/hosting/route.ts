@@ -5,9 +5,7 @@ import { getAdminSettings } from "@/lib/admin-settings";
 import { CLOUDFLARE_HARD_ASSET_MB } from "@/lib/hosting/rules";
 import { normalizeHostInput, universalSslCovered } from "@/lib/hosting/domains";
 import { listProviders } from "@/lib/hosting/providers";
-import { readWorkerToken } from "@/lib/hosting/credentials";
-import { decryptSecretOrThrow } from "@/lib/mailbox-crypto";
-import type { CfCredential } from "@/lib/hosting/cloudflare";
+import { readWorkerToken, readMainToken, readZoneToken } from "@/lib/hosting/credentials";
 import { listActiveZones, isReservedZone } from "@/lib/hosting/workers";
 import { provisionPublicHost, teardownPublicHost } from "@/lib/hosting/public-proxy";
 import {
@@ -228,8 +226,70 @@ function purposePins(settings: HostingSettingRow): PurposeAccountPins {
   };
 }
 
+type PlatformZone = { id: string; name: string; status: string };
+
+type AccountZoneLookup =
+  | { ok: true; label: string; zones: PlatformZone[] }
+  | { ok: false; label: string | null; reason: "missing" | "no_token" | "cf_error"; error: string };
+
 /**
- * GET /api/admin/hosting/zones?purpose=links|sites|public[&accountId=<cf id>]
+ * TASK_251 — resolve an account's zones from the FIRST token that works.
+ *
+ * A platform account can have several roster rows (one per domain), and each row
+ * has three independently-scoped tokens. The old code used `findFirst` and only
+ * the Workers token, so one dead row or token hid every valid zone in the
+ * account. Walk every row in rotation order and try worker → main → zone,
+ * treating an absent/unreadable token as "try the next one" and stopping at the
+ * first Cloudflare success. Tokens never leave this function.
+ */
+async function listZonesForAccount(accountId: string): Promise<AccountZoneLookup> {
+  const rows = await prisma.hostingPlatformAccount.findMany({
+    where: { accountId },
+    orderBy: [{ priority: "asc" }, { createdAt: "asc" }],
+  });
+  if (rows.length === 0) {
+    return {
+      ok: false,
+      label: null,
+      reason: "missing",
+      error: "The pinned Cloudflare account was not found.",
+    };
+  }
+
+  let sawToken = false;
+  let lastError = "Cloudflare did not return a zone list.";
+  for (const row of rows) {
+    const candidates = [readWorkerToken(row), readMainToken(row), readZoneToken(row)];
+    const seen = new Set<string>();
+    for (const token of candidates) {
+      if (!token || seen.has(token)) continue;
+      seen.add(token);
+      sawToken = true;
+      const listed = await listActiveZones({ accountId, token });
+      if (listed.ok) {
+        return {
+          ok: true,
+          label: row.label,
+          zones: (listed.value ?? []).map((z) => ({ id: z.id, name: z.name, status: z.status })),
+        };
+      }
+      lastError = listed.error ?? lastError;
+    }
+  }
+
+  if (!sawToken) {
+    return {
+      ok: false,
+      label: rows[0].label,
+      reason: "no_token",
+      error: "This account has no Workers/DNS token. Add one in the admin panel to list zones.",
+    };
+  }
+  return { ok: false, label: rows[0].label, reason: "cf_error", error: lastError };
+}
+
+/**
+ * GET /api/admin/hosting?purpose=links|sites|public[&accountId=<cf id>]
  *
  * Lists the active zones in the pinned Cloudflare account for a domain-selector
  * purpose. `accountId` lets the panel preview the zones of an account it has
@@ -257,66 +317,24 @@ async function handleZonesGet(
     });
   }
 
-  const row = await prisma.hostingPlatformAccount.findFirst({
-    where: { accountId },
-  });
-  if (!row) {
+  const lookup = await listZonesForAccount(accountId);
+  if (!lookup.ok) {
     return NextResponse.json({
       accountId,
-      label: null,
-      zones: [],
-      canListZones: false,
-      error: "The pinned Cloudflare account was not found.",
-    });
-  }
-
-  // Require a token that can list zones. Prefer the dedicated Workers/DNS token,
-  // but fall back to the account's main API token so an account added with just
-  // one token can still list zones.
-  let workerToken = readWorkerToken(row);
-  if (!workerToken) {
-    try {
-      workerToken = decryptSecretOrThrow(
-        row.tokenCiphertext,
-        row.tokenIv,
-        row.tokenTag,
-        "hosting platform account main token"
-      );
-    } catch {
-      workerToken = null;
-    }
-  }
-  if (!workerToken) {
-    return NextResponse.json({
-      accountId,
-      label: row.label,
+      label: lookup.label,
       zones: [],
       canListZones: false,
       error:
-        "This account has no Workers/DNS token. Add one in the admin panel to list zones.",
-    });
-  }
-
-  const cred: CfCredential = { accountId, token: workerToken };
-  const listed = await listActiveZones(cred);
-  if (!listed.ok) {
-    return NextResponse.json({
-      accountId,
-      label: row.label,
-      zones: [],
-      canListZones: false,
-      error: listed.error ?? "Could not list zones from Cloudflare.",
+        lookup.reason === "cf_error"
+          ? `Could not list zones from Cloudflare: ${lookup.error}`
+          : lookup.error,
     });
   }
 
   return NextResponse.json({
     accountId,
-    label: row.label,
-    zones: (listed.value ?? []).map((z) => ({
-      id: z.id,
-      name: z.name,
-      status: z.status,
-    })),
+    label: lookup.label,
+    zones: lookup.zones,
     canListZones: true,
     error: null,
   });
@@ -387,22 +405,15 @@ async function validateHostZone(
     return `No Cloudflare account is pinned for ${PURPOSE_LABEL[purpose]}. Pick one, then Apply.`;
   }
 
-  const row = await prisma.hostingPlatformAccount.findFirst({
-    where: { accountId },
-  });
-  if (!row) {
-    return `The pinned Cloudflare account (${accountId}) was not found.`;
-  }
-
-  const workerToken = readWorkerToken(row);
-  if (!workerToken) {
-    return `The pinned account (${accountId}) has no Workers/DNS token, so its zones cannot be checked. Add one in the admin panel.`;
-  }
-
-  const cred: CfCredential = { accountId, token: workerToken };
-  const listed = await listActiveZones(cred);
-  if (!listed.ok) {
-    return `Could not list zones for account ${accountId}: ${listed.error ?? "Cloudflare error."}`;
+  const lookup = await listZonesForAccount(accountId);
+  if (!lookup.ok) {
+    if (lookup.reason === "missing") {
+      return `The pinned Cloudflare account (${accountId}) was not found.`;
+    }
+    if (lookup.reason === "no_token") {
+      return `The pinned account (${accountId}) has no Workers/DNS token, so its zones cannot be checked. Add one in the admin panel.`;
+    }
+    return `Could not list zones for account ${accountId}: ${lookup.error}`;
   }
 
   // Suffix match, NOT a last-two-labels guess: a zone can be deeper than two
@@ -412,7 +423,7 @@ async function validateHostZone(
     return `"${host}" is not a valid domain name.`;
   }
 
-  const activeZone = (listed.value ?? []).find((z) => {
+  const activeZone = lookup.zones.find((z) => {
     const name = z.name?.toLowerCase();
     return !!name && (normalized === name || normalized.endsWith(`.${name}`));
   });
