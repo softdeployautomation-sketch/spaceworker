@@ -1,10 +1,10 @@
 import "server-only";
 
 import { randomUUID, createHash } from "node:crypto";
-import { writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { writeFileSync, mkdirSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { ClineCore } from "@cline/sdk";
+import { ClineCore, formatProviderOAuthApiKey } from "@cline/sdk";
 import { ToolApprovalRequest, ToolApprovalResult } from "@cline/shared";
 
 import { db } from "@/lib/db";
@@ -78,7 +78,15 @@ async function resolveClineApiKey(
 ): Promise<{ apiKey?: string; source: ClineKeySource }> {
   if (explicitKey) return { apiKey: explicitKey, source: "request" };
   const oauthToken = await _clineAccessToken(userId);
-  if (oauthToken) return { apiKey: oauthToken, source: "oauth" };
+  if (oauthToken) {
+    // TASK_252 — provider "cline" authenticates OAuth sessions with the
+    // `workos:<access>` key format. Passing the bare WorkOS JWT produced a 401
+    // (`errorClass:"auth"`) even with a perfectly valid token.
+    return {
+      apiKey: formatProviderOAuthApiKey("cline", { access: oauthToken }),
+      source: "oauth",
+    };
+  }
   if (settings?.clineApiKeyEnc) return { apiKey: settings.clineApiKeyEnc, source: "manual" };
   return { source: "none" };
 }
@@ -105,6 +113,140 @@ interface PendingApproval {
 const pendingApprovals = new Map<string, PendingApproval>();
 const clineInstances = new Map<string, ClineCore>();
 const stepCounters = new Map<string, number>();
+
+// ---------------------------------------------------------------------------
+// TASK_252 — asynchronous turn state
+//
+// `cline.start` / `cline.send` resolve only after the WHOLE turn, including a
+// tool-approval prompt. Awaiting them inside the HTTP handler meant the request
+// hung and the browser never got a session id, so it could never poll for the
+// approval it was waiting on. Turns now run in the background and the console
+// polls status + transcript.
+// ---------------------------------------------------------------------------
+
+interface SessionRunState {
+  pending: number;
+  queue: Promise<void>;
+  lastError?: string;
+  lastErrorClass?: string;
+  lastFinish?: string;
+  lastText?: string;
+  unsubscribe?: () => void;
+}
+
+const sessionRuns = new Map<string, SessionRunState>();
+
+function getRunState(sessionId: string): SessionRunState {
+  let state = sessionRuns.get(sessionId);
+  if (!state) {
+    state = { pending: 0, queue: Promise.resolve() };
+    sessionRuns.set(sessionId, state);
+  }
+  return state;
+}
+
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === "string") return err;
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return String(err);
+  }
+}
+
+/**
+ * Turn a raw provider failure into something the operator can act on. The SDK
+ * reports auth rejections as an empty error object with `errorClass:"auth"`, so
+ * the class is often the only useful signal.
+ */
+function friendlyClineFailure(errorClass?: string, message?: string): string {
+  const text = (message ?? "").trim();
+  if (errorClass === "auth" || /unauthorized|re-authenticate|401|invalid.*token/i.test(text)) {
+    return "Cline login was rejected. Open Settings → Cline, reconnect your Cline account, then start a new session (or Resume). The stored token is present but the Cline API did not accept it.";
+  }
+  if (errorClass === "rate_limit" || /rate.?limit|429|too many requests/i.test(text)) {
+    return "Cline rate-limited this turn. Wait a moment, then send your message again. If it persists, switch to another Cline model in Settings → Cline.";
+  }
+  if (text) return text;
+  return "The agent run failed before it could reply. Open the live feed below and try again; if it repeats, reconnect Cline in Settings → Cline.";
+}
+
+type SessionUpdateData = {
+  status?: string;
+  stopReason?: string | null;
+  lastActivityAt?: Date;
+};
+
+/** Update a session only if it still exists and was not stopped mid-turn. */
+async function safeUpdateSession(sessionId: string, data: SessionUpdateData): Promise<void> {
+  try {
+    const current = await _db().cyberLabAgentSession.findUnique({ where: { id: sessionId } });
+    if (!current || current.status === "stopped") return;
+    await _db().cyberLabAgentSession.update({ where: { id: sessionId }, data });
+  } catch {
+    // Session may have been deleted or the process may be shutting down.
+  }
+}
+
+/**
+ * Queue a turn for a session. The HTTP handler returns immediately; completion
+ * updates the DB and run state in the background.
+ */
+function enqueueTurn(sessionId: string, task: () => Promise<void>): void {
+  const state = getRunState(sessionId);
+  state.pending += 1;
+
+  const execute = async () => {
+    try {
+      await task();
+    } catch (err) {
+      const failure = friendlyClineFailure(state.lastErrorClass, errorMessage(err));
+      state.lastError = failure;
+      state.lastFinish = "error";
+      await safeUpdateSession(sessionId, {
+        status: "failed",
+        stopReason: failure,
+        lastActivityAt: new Date(),
+      });
+    } finally {
+      state.pending = Math.max(0, state.pending - 1);
+    }
+  };
+
+  if (state.pending === 1) {
+    // Start immediately when idle: this sets up lastActivity/streams the first
+    // events synchronously and avoids a pointless microtask delay.
+    state.queue = execute();
+  } else {
+    // Serialise later messages behind the running turn.
+    state.queue = state.queue.then(execute);
+  }
+}
+
+async function finishTurn(
+  sessionId: string,
+  finishReason: string | undefined,
+  text: string | undefined,
+): Promise<void> {
+  const state = getRunState(sessionId);
+  state.lastFinish = finishReason ?? "completed";
+  state.lastText = text ?? "";
+  if (state.lastFinish === "error") {
+    const failure = friendlyClineFailure(state.lastErrorClass, state.lastError);
+    state.lastError = failure;
+    await safeUpdateSession(sessionId, {
+      status: "failed",
+      stopReason: failure,
+      lastActivityAt: new Date(),
+    });
+    return;
+  }
+  state.lastError = undefined;
+  state.lastErrorClass = undefined;
+  await safeUpdateSession(sessionId, { status: "active", lastActivityAt: new Date() });
+}
+
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -188,17 +330,49 @@ export function subscribeClineSession(
             `hook:${hook.hookEventName}${hook.toolName ? `/${hook.toolName}` : ""}`,
             hook,
           );
+          if (hook.hookEventName === "agent_error") {
+            const hookError = hook as {
+              errorClass?: string;
+              error?: unknown;
+              message?: string;
+            };
+            const state = getRunState(sessionId);
+            state.lastErrorClass = hookError.errorClass ?? state.lastErrorClass;
+            const msg =
+              typeof hookError.message === "string"
+                ? hookError.message
+                : hookError.error
+                  ? errorMessage(hookError.error)
+                  : undefined;
+            if (msg?.trim()) state.lastError = msg;
+          }
         }
       } else if (type === "agent_event") {
-        const agentEvent = payload as { type?: string; [key: string]: unknown };
+        // SDK shape: { sessionId, event: {...}, teamRole }. The old code read
+        // `payload.type` (always undefined) and recorded every event as
+        // "agent_event:unknown", hiding the actual error event.
+        const envelope = payload as {
+          event?: { type?: string; errorClass?: string; error?: { message?: string } };
+          [key: string]: unknown;
+        };
+        const agentEvent = envelope.event ?? (payload as { type?: string });
+        const eventType = typeof agentEvent.type === "string" ? agentEvent.type : "unknown";
         recordContextDocEvent(
           sessionId,
           modelProvider,
           modelId,
           apiEndpoint,
-          `agent_event:${agentEvent.type ?? "unknown"}`,
-          agentEvent,
+          `agent_event:${eventType}`,
+          envelope,
         );
+        if (eventType === "error") {
+          const state = getRunState(sessionId);
+          const err = (agentEvent as { errorClass?: string; error?: { message?: string } });
+          state.lastErrorClass = err.errorClass;
+          if (typeof err.error?.message === "string" && err.error.message.trim()) {
+            state.lastError = err.error.message;
+          }
+        }
       } else if (type === "ended") {
         recordContextDocEvent(
           sessionId,
@@ -352,12 +526,13 @@ export async function startClineLabSession(input: StartSessionInput): Promise<St
     data: {
       id: sessionId,
       userId: input.userId,
-      status: "pending",
+      status: "active",
       modelProvider,
       modelId,
       apiEndpoint,
       apiKeyHash: apiKey ? hashApiKey(apiKey) : undefined,
       cwd,
+      lastActivityAt: new Date(),
     },
   });
 
@@ -381,15 +556,33 @@ export async function startClineLabSession(input: StartSessionInput): Promise<St
     },
   };
 
-  const cline = await _clineCore().create({
-    clientName: "spaceworker-cyberlab",
-    backendMode: "local",
-    capabilities,
-  });
+  let cline: ClineCore;
+  try {
+    cline = await _clineCore().create({
+      clientName: "spaceworker-cyberlab",
+      backendMode: "local",
+      capabilities,
+    });
+  } catch (err) {
+    const failure = friendlyClineFailure(undefined, errorMessage(err));
+    await safeUpdateSession(sessionId, { status: "failed", stopReason: failure });
+    return { sessionId, status: "failed", message: failure };
+  }
 
   clineInstances.set(sessionId, cline);
 
-  try {
+  // Subscribe BEFORE the turn starts: start() emits status/agent events as it
+  // runs, and the old code subscribed after awaiting start(), losing them all.
+  const unsubscribe = subscribeClineSession(
+    sessionId,
+    cline,
+    modelProvider,
+    modelId,
+    apiEndpoint ?? undefined,
+  );
+
+  getRunState(sessionId).unsubscribe = unsubscribe;
+  enqueueTurn(sessionId, async () => {
     const startResult = await cline.start({
       config: {
         sessionId,
@@ -407,36 +600,20 @@ export async function startClineLabSession(input: StartSessionInput): Promise<St
       prompt: input.prompt,
       interactive: true,
     });
-
-    // Subscribe to Cline events for auto context-doc recording (model/key-versioned).
-    const unsubscribe = subscribeClineSession(
+    await finishTurn(
       sessionId,
-      cline,
-      "cline",
-      modelId,
-      apiEndpoint ?? undefined,
+      startResult.result?.finishReason,
+      startResult.result?.text,
     );
+  });
 
-    await _db().cyberLabAgentSession.update({
-      where: { id: sessionId },
-      data: { status: "active", lastActivityAt: new Date() },
-    });
-
-    return {
-      sessionId,
-      status: startResult.result ? "completed" : "started",
-      message: startResult.result?.finishReason ?? "Session started",
-      unsubscribe,
-    };
-  } catch (err) {
-    await _db().cyberLabAgentSession.update({
-      where: { id: sessionId },
-      data: { status: "failed", stopReason: err instanceof Error ? err.message : String(err) },
-    });
-    clineInstances.delete(sessionId);
-    pendingApprovals.delete(sessionId);
-    throw err instanceof Error ? err : new Error(String(err));
-  }
+  return {
+    sessionId,
+    status: "started",
+    message:
+      "Session started — the agent is working. Live transcript and tool approvals appear in the console.",
+    unsubscribe,
+  };
 }
 
 export async function sendClineMessage(sessionId: string, prompt: string, userId: string): Promise<{
@@ -454,28 +631,26 @@ export async function sendClineMessage(sessionId: string, prompt: string, userId
 
   const cline = clineInstances.get(sessionId);
   if (!cline) {
-    return { status: "failed", message: "Session runtime not active" };
+    return { status: "failed", message: "Session runtime is not active. Use Resume to recreate it." };
   }
-
-  try {
-    const result = await cline.send({ sessionId, prompt });
-
-    await _db().cyberLabAgentSession.update({
-      where: { id: sessionId },
-      data: { lastActivityAt: new Date() },
-    });
-
+  if (sessionRuns.get(sessionId)?.lastFinish === "error") {
     return {
-      status: result ? "completed" : "started",
-      message: result?.finishReason ?? "Message sent",
+      status: "failed",
+      message:
+        "The last turn failed. Use Resume to recreate the session with a fresh Cline connection (reconnect in Settings → Cline first if the error was an auth error).",
     };
-  } catch (err) {
-    await _db().cyberLabAgentSession.update({
-      where: { id: sessionId },
-      data: { status: "failed", stopReason: err instanceof Error ? err.message : String(err) },
-    });
-    return { status: "failed", message: err instanceof Error ? err.message : String(err) };
   }
+
+  await safeUpdateSession(sessionId, { status: "active", lastActivityAt: new Date() });
+  enqueueTurn(sessionId, async () => {
+    const result = await cline.send({ sessionId, prompt });
+    await finishTurn(sessionId, result?.finishReason, result?.text);
+  });
+
+  return {
+    status: "started",
+    message: "Message queued — the agent is working.",
+  };
 }
 
 /**
@@ -551,11 +726,18 @@ export async function resumeClineSession(
     },
   };
 
-  const cline = await _clineCore().create({
-    clientName: "spaceworker-cyberlab",
-    backendMode: "local",
-    capabilities,
-  });
+  let cline: ClineCore;
+  try {
+    cline = await _clineCore().create({
+      clientName: "spaceworker-cyberlab",
+      backendMode: "local",
+      capabilities,
+    });
+  } catch (err) {
+    const failure = friendlyClineFailure(undefined, errorMessage(err));
+    await safeUpdateSession(sessionId, { status: "failed", stopReason: failure });
+    return { status: "failed", message: failure };
+  }
 
   clineInstances.set(sessionId, cline);
 
@@ -567,50 +749,51 @@ export async function resumeClineSession(
     apiEndpoint ?? undefined,
   );
 
-  // (Re)start the Cline session with authentication so resume works after
-  // idle shutdown, kill switch, or server restart.
-  await cline.start({
-    config: {
-      sessionId,
-      // SDK provider is always "cline"; `modelProvider` is our own audit label
-      // ("cline" | "cline-free" | "external") and is not an SDK provider id.
-      providerId: "cline",
-      modelId,
-      apiKey: apiKey ?? undefined,
-      baseUrl: apiEndpoint ?? undefined,
-      systemPrompt: buildCyberLabSystemPrompt(userId),
-      cwd,
-      workspaceRoot: cwd,
-      enableTools: true,
-      enableSpawnAgent: false,
-      enableAgentTeams: false,
-    },
-    prompt,
-    interactive: true,
+  getRunState(sessionId).unsubscribe = unsubscribe;
+  // Resume must CLEAR "stopped"; safeUpdateSession intentionally refuses to
+  // overwrite a stopped session for background turn completions, so use a
+  // direct update here.
+  await _db().cyberLabAgentSession.update({
+    where: { id: sessionId },
+    data: { status: "active", stopReason: null, lastActivityAt: new Date() },
   });
 
-  try {
-    const result = await cline.send({ sessionId, prompt });
-
-    await _db().cyberLabAgentSession.update({
-      where: { id: sessionId },
-      data: { status: "active", lastActivityAt: new Date() },
+  // (Re)start the Cline session with authentication so resume works after
+  // idle shutdown, kill switch, or server restart. `start` already runs the
+  // prompt; the old code then sent the same prompt a second time.
+  getRunState(sessionId);
+  enqueueTurn(sessionId, async () => {
+    const startResult = await cline.start({
+      config: {
+        sessionId,
+        // SDK provider is always "cline"; `modelProvider` is our own audit label
+        // ("cline" | "cline-free" | "external") and is not an SDK provider id.
+        providerId: "cline",
+        modelId,
+        apiKey: apiKey ?? undefined,
+        baseUrl: apiEndpoint ?? undefined,
+        systemPrompt: buildCyberLabSystemPrompt(userId),
+        cwd,
+        workspaceRoot: cwd,
+        enableTools: true,
+        enableSpawnAgent: false,
+        enableAgentTeams: false,
+      },
+      prompt,
+      interactive: true,
     });
+    await finishTurn(
+      sessionId,
+      startResult.result?.finishReason,
+      startResult.result?.text,
+    );
+  });
 
-    return {
-      status: result ? "completed" : "started",
-      message: result?.finishReason ?? "Session resumed",
-      unsubscribe,
-    };
-  } catch (err) {
-    await _db().cyberLabAgentSession.update({
-      where: { id: sessionId },
-      data: { status: "failed", stopReason: err instanceof Error ? err.message : String(err) },
-    });
-    clineInstances.delete(sessionId);
-    pendingApprovals.delete(sessionId);
-    return { status: "failed", message: err instanceof Error ? err.message : String(err) };
-  }
+  return {
+    status: "started",
+    message: "Session resumed — the agent is working.",
+    unsubscribe,
+  };
 }
 
 export function resolveToolApproval(sessionId: string, approved: boolean, reason?: string): boolean {
@@ -642,6 +825,9 @@ export async function stopClineSession(sessionId: string, userId: string): Promi
   }
 
   pendingApprovals.delete(sessionId);
+  const run = sessionRuns.get(sessionId);
+  run?.unsubscribe?.();
+  sessionRuns.delete(sessionId);
 
   await _db().cyberLabAgentSession.update({
     where: { id: sessionId },
@@ -657,6 +843,7 @@ export async function getClineSessionStatus(sessionId: string, userId: string) {
 
   const pending = pendingApprovals.get(sessionId);
   const instance = clineInstances.has(sessionId);
+  const run = sessionRuns.get(sessionId);
 
   return {
     id: session.id,
@@ -672,9 +859,192 @@ export async function getClineSessionStatus(sessionId: string, userId: string) {
     idleShutdownAt: session.idleShutdownAt,
     contextDocPath: session.contextDocPath,
     frozenByAdmin: session.frozenByAdmin,
+    stopReason: session.stopReason,
     hasPendingApproval: !!pending,
     approvalRequest: pending?.request ?? null,
     runtimeActive: instance,
+    busy: (run?.pending ?? 0) > 0,
+    lastError: run?.lastError ?? (run?.lastErrorClass ? friendlyClineFailure(run.lastErrorClass) : null),
+    lastFinish: run?.lastFinish ?? null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// TASK_252 — session list + visible transcript
+// ---------------------------------------------------------------------------
+
+export async function listClineSessions(userId: string, limit = 20) {
+  const rows = await _db().cyberLabAgentSession.findMany({
+    where: { userId },
+    orderBy: { startedAt: "desc" },
+    take: limit,
+  });
+  return rows.map((s) => ({
+    id: s.id,
+    status: s.status,
+    modelProvider: s.modelProvider,
+    modelId: s.modelId,
+    startedAt: s.startedAt,
+    lastActivityAt: s.lastActivityAt,
+    idleShutdownAt: s.idleShutdownAt,
+    contextDocPath: s.contextDocPath,
+    stopReason: s.stopReason,
+    frozenByAdmin: s.frozenByAdmin,
+    runtimeActive: clineInstances.has(s.id),
+    busy: (sessionRuns.get(s.id)?.pending ?? 0) > 0,
+    lastError: sessionRuns.get(s.id)?.lastError ?? null,
+  }));
+}
+
+export interface ClineTranscriptEntry {
+  role: "user" | "assistant" | "tool" | "system";
+  text: string;
+  thinking: string | null;
+  tools: Array<{
+    toolName: string;
+    input?: unknown;
+    output?: unknown;
+    isError?: boolean;
+  }>;
+}
+
+function clipText(value: unknown, max = 16_000): string {
+  if (typeof value === "string") return value.length > max ? `${value.slice(0, max)}…` : value;
+  if (value == null) return "";
+  try {
+    const json = JSON.stringify(value);
+    return json.length > max ? `${json.slice(0, max)}…` : json;
+  } catch {
+    const text = String(value);
+    return text.length > max ? `${text.slice(0, max)}…` : text;
+  }
+}
+
+type UnknownRecord = Record<string, unknown>;
+
+function asRecord(value: unknown): UnknownRecord | null {
+  return typeof value === "object" && value !== null ? (value as UnknownRecord) : null;
+}
+
+function normalizeClineMessage(raw: unknown): ClineTranscriptEntry | null {
+  const wrapper = asRecord(raw);
+  if (!wrapper) return null;
+  const msg = asRecord(wrapper.message) ?? wrapper;
+
+  const role: ClineTranscriptEntry["role"] =
+    msg.role === "user" || msg.role === "assistant" || msg.role === "tool"
+      ? msg.role
+      : "system";
+
+  const texts: string[] = [];
+  const thinking: string[] = [];
+  const tools: ClineTranscriptEntry["tools"] = [];
+  const parts: unknown[] =
+    typeof msg.content === "string"
+      ? [{ type: "text", text: msg.content }]
+      : Array.isArray(msg.content)
+        ? msg.content
+        : [];
+
+  for (const rawPart of parts) {
+    const part = asRecord(rawPart);
+    if (!part) continue;
+    const type = String(part.type ?? "");
+    if (type === "text") {
+      if (typeof part.text === "string" && part.text.trim()) texts.push(part.text);
+    } else if (type === "thinking" || type === "reasoning") {
+      const value = part.thinking ?? part.text;
+      if (typeof value === "string" && value.trim()) thinking.push(value);
+    } else if (type === "tool-call" || type === "tool_use" || type === "tool-call-delta") {
+      tools.push({
+        toolName: String(part.toolName ?? part.name ?? "tool"),
+        input: part.input ?? part.args ?? part.arguments,
+      });
+    } else if (type === "tool-result" || type === "tool_result") {
+      tools.push({
+        toolName: String(part.toolName ?? part.name ?? "tool"),
+        output: part.output ?? part.content ?? part.result,
+        isError: part.isError === true,
+      });
+    } else if (typeof part.text === "string" && part.text.trim()) {
+      texts.push(part.text);
+    }
+  }
+
+  // Tool-role messages may carry only an output payload.
+  if (role === "tool" && texts.length === 0 && tools.length === 0 && msg.content != null) {
+    texts.push(clipText(msg.content));
+  }
+
+  if (texts.length === 0 && thinking.length === 0 && tools.length === 0) return null;
+
+  return {
+    role,
+    text: texts.join("\n\n"),
+    thinking: thinking.length > 0 ? thinking.join("\n\n") : null,
+    tools,
+  };
+}
+
+async function readSessionTranscript(
+  cline: ClineCore,
+  sessionId: string,
+): Promise<ClineTranscriptEntry[]> {
+  let raw: unknown[] = [];
+  try {
+    raw = await cline.readDisplayMessages(sessionId);
+  } catch {
+    try {
+      raw = await cline.readMessages(sessionId);
+    } catch {
+      return [];
+    }
+  }
+  return raw.map(normalizeClineMessage).filter((m): m is ClineTranscriptEntry => m !== null);
+}
+
+export async function getClineSessionMessages(sessionId: string, userId: string) {
+  const session = await _db().cyberLabAgentSession.findUnique({ where: { id: sessionId } });
+  if (!session || session.userId !== userId) return null;
+
+  const cline = clineInstances.get(sessionId);
+  const run = sessionRuns.get(sessionId);
+  let messages: ClineTranscriptEntry[] = [];
+  let runtimeError: string | null = null;
+
+  if (cline) {
+    try {
+      messages = await readSessionTranscript(cline, sessionId);
+    } catch (err) {
+      runtimeError = errorMessage(err);
+    }
+  }
+
+  const stepRows = await _db().cyberLabContextDocStep.findMany({
+    where: { sessionId },
+    orderBy: { stepNo: "desc" },
+    take: 80,
+  });
+
+  return {
+    sessionId,
+    status: session.status,
+    runtimeActive: !!cline,
+    busy: (run?.pending ?? 0) > 0,
+    lastError: run?.lastError ?? (run?.lastErrorClass ? friendlyClineFailure(run.lastErrorClass) : null),
+    lastFinish: run?.lastFinish ?? null,
+    runtimeError,
+    messages,
+    steps: stepRows
+      .slice()
+      .reverse()
+      .map((s) => ({
+        stepNo: s.stepNo,
+        summary: s.summary,
+        modelProvider: s.modelProvider,
+        modelId: s.modelId,
+        createdAt: s.createdAt,
+      })),
   };
 }
 
@@ -732,6 +1102,9 @@ export async function sweepIdleSessions(): Promise<{ stopped: number }> {
       clineInstances.delete(session.id);
     }
     pendingApprovals.delete(session.id);
+    const run = sessionRuns.get(session.id);
+    run?.unsubscribe?.();
+    sessionRuns.delete(session.id);
 
     await _db().cyberLabAgentSession.update({
       where: { id: session.id },
@@ -942,9 +1315,8 @@ export async function generateRemediationFixList(
     orderBy: { stepNo: "asc" },
   });
   let contextDocContent = "";
-  const fs = require("node:fs");
-  if (session.contextDocPath && fs.existsSync(session.contextDocPath)) {
-    contextDocContent = fs.readFileSync(session.contextDocPath, "utf8");
+  if (session.contextDocPath && existsSync(session.contextDocPath)) {
+    contextDocContent = readFileSync(session.contextDocPath, "utf8");
   }
   const stepSummaries = steps.map((s) => `## Step ${s.stepNo} — ${s.summary}\n${s.contentRef}`).join("\n\n");
   const fullContent = contextDocContent + "\n\n---\n\n" + stepSummaries;
@@ -1001,9 +1373,8 @@ export async function createSignedEpisodeForSession(
     createdAt: s.createdAt.toISOString(),
   }));
   const artefacts = [];
-  const fs = require("node:fs");
-  if (session.contextDocPath && fs.existsSync(session.contextDocPath)) {
-    const docContent = fs.readFileSync(session.contextDocPath, "utf8");
+  if (session.contextDocPath && existsSync(session.contextDocPath)) {
+    const docContent = readFileSync(session.contextDocPath, "utf8");
     artefacts.push({ path: "context-doc.md", content: docContent });
   }
   const fixList = await generateRemediationFixList(sessionId, userId);
@@ -1059,47 +1430,55 @@ export async function createSignedEpisodeForSession(
 }
 
 function buildCyberLabSystemPrompt(userId: string): string {
-  return `You are the SpaceWorker Cyber Lab agent — a controlled offensive security assistant.
+  return `You are the SpaceWorker Cyber Lab agent — a controlled offensive-security assistant AND a patient bug-hunting teacher.
 
-You operate under strict human-in-the-loop rules:
-- EVERY destructive action (shell commands, network probes, device commands) requires explicit human approval before execution.
-- You PROPOSE actions; a human APPROVES or DENIES them.
-- You never act autonomously on anything that could touch a real system.
+TWO JOBS, ALWAYS:
+1. Teach the user how bug hunting works: scope, recon, enumeration, validation, proof of impact, reporting, fixing, retesting.
+2. Do the work WITH the user, using your real tools against only the targets they have attested.
 
-Your mission: help the user learn to defend by showing how an attacker gets in — like a bug bounty hunter proving loopholes with evidence.
+TEACHING MODE (default):
+- Explain what you are about to do and WHY, in plain language, before each step.
+- Give a short plan first. If the user has not named an attested target and goal, ask for them; never guess.
+- If the user says "hello" or asks a general question, answer directly, give a 5-step bug-hunting lesson map, and ask what they want to test. Do not demand a target in the greeting.
+- After every command, interpret the result: what it means, what you learned, what you will try next.
+- Name the technique and the defensive lesson as you go (e.g. "this is service discovery — defenders reduce this by closing unused ports").
+- Do not dump a command without explaining the risk and expected output.
 
-Scope (hard limits — never exceed):
+HUMAN-IN-THE-LOOP (hard rule):
+- EVERY shell command, network probe, file write outside the session workspace, or device action requires explicit human approval.
+- You PROPOSE; a human APPROVES or DENIES. Never act autonomously against a real system.
+- If an action is denied, explain what you would have learned and offer a safe alternative.
+
+SCOPE (hard limits — never exceed):
 1. Only targets the user has attested/authorized in their Cyber Lab inventory.
 2. No mass scanning, no third-party targets outside the user's own inventory.
 3. No spoofing, no social engineering against real people.
-4. All actions are real (not simulation) — real TCP probes, real PowerShell, real WiFi reconnaissance — but only against the user's own attested assets.
+4. Real actions are allowed only against the user's own attested assets.
 
-Bug bounty hunter toolkit (use these via shell when available and approved):
-- ffuf / dirb — web content discovery, directory busting (ATT&CK T1595)
-- hydra — password spraying / brute force against attested services (ATT&CK T1110.001)
-- nmap / masscan — network service discovery (ATT&CK T1046)
-- nuclei — vulnerability scanning with templates (ATT&CK T1595)
-- Burp Suite Community — web app proxy, repeater, intruder (ATT&CK T1190)
-- Nessus Essentials — vulnerability assessment scanning
-- dnsrecon / dnscat2 — DNS enumeration and tunneling (ATT&CK T1590.002)
-- Wireshark / tshark — packet capture and analysis (defensive)
-- VirusTotal — reputation lookups (defensive)
+TOOLS:
+- Your full Cline tool set is enabled: shell/command execution, file read/write, search, web fetch, and the rest of your tools.
+- Before running a utility, check it exists with \`command -v <tool>\`.
+- This host commonly has: curl, wget, dig, whois, nc, jq, python3, node. Scanners such as nmap, ffuf, dirb, hydra, nuclei, sqlmap may NOT be installed. If a tool is missing, say so and use a safe built-in alternative (curl/python3/node/nc/dig) or ask the owner to install it. Never pretend a command ran.
+- When available: nmap/masscan (service discovery, T1046), ffuf/dirb (content discovery, T1595), nuclei (vuln templates, T1595), hydra (credential testing, T1110.001), Burp (web proxy, T1190), dnsrecon (DNS, T1590.002), tshark/Wireshark (defensive capture).
+- Record evidence for every finding: exact command, relevant output, timestamp.
 
-When you find vulnerabilities, produce a remediation report:
-- What was found (tool, target, technique, evidence)
-- How to fix it (specific commands/config changes)
-- Priority (critical/high/medium/low)
-- Steps to reproduce so the owner can verify and patch
+BUG-HUNTING LOOP:
+1. Scope + consent: confirm the attested target and what "success" means.
+2. Recon: passive/active discovery, only on attested assets.
+3. Enumerate: services, paths, versions, identities.
+4. Validate: prove the issue with the smallest safe test; avoid destructive payloads.
+5. Prove impact: show what an attacker could reach and what data/action is exposed.
+6. Report: what, where, evidence, ATT&CK technique, severity (critical/high/medium/low), exact fix, reproduction steps, retest command.
+7. Fix + verify: after the owner patches, rerun the exact proof to confirm.
 
-Work steps:
-1. Recon: scan the attested target (website, IP, network, WiFi)
-2. Identify vulnerabilities with bug hunter tools
-3. Propose exploit steps (human must approve each — no autonomous exploitation)
-4. After the run, write a fix/remediation report bound to the signed episode
-5. All steps are recorded in the signed evidence log
+WORK STEPS:
+1. Ask for (or confirm) the attested target and goal.
+2. Inspect the environment and check which tools actually exist.
+3. Run recon, interpret results, and teach the decision at each step.
+4. Propose exploit/validation steps one at a time for approval.
+5. Produce a remediation report bound to the signed evidence log.
 
-You have access to these tools: shell commands, file read/write, web fetch, search.
-When you want to run a shell command or network probe, you will be prompted for approval. Describe exactly what you plan to do and why.
+All steps are recorded in the signed evidence log.
 
 Current user: ${userId}
 `;
@@ -1120,5 +1499,13 @@ if (typeof process !== "undefined" && process.on) {
     }
     clineInstances.clear();
     pendingApprovals.clear();
+    for (const run of sessionRuns.values()) {
+      try {
+        run.unsubscribe?.();
+      } catch {
+        // ignore
+      }
+    }
+    sessionRuns.clear();
   });
 }

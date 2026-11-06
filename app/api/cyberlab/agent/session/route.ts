@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { getCurrentUser } from "@/lib/session-user";
 import { moduleToolsDenied } from "@/lib/module-gate";
-import { startClineLabSession } from "@/lib/lab/cline-agent";
+import { startClineLabSession, listClineSessions } from "@/lib/lab/cline-agent";
 import { z } from "zod";
 
 export const dynamic = "force-dynamic";
@@ -17,6 +17,19 @@ const StartSessionSchema = z.object({
     value: z.string().min(1),
   })).optional(),
 });
+
+export async function GET() {
+  const user = await getCurrentUser();
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const denied = await moduleToolsDenied(user.id, "cyberlab");
+  if (denied) return denied;
+
+  const sessions = await listClineSessions(user.id);
+  return NextResponse.json({ sessions });
+}
 
 export async function POST(req: Request) {
   const user = await getCurrentUser();
