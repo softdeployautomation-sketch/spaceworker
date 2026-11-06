@@ -26,6 +26,8 @@ const clineInstances = new Map<string, any>();
 let lastStartInput: any = null;
 let lastSendInput: any = null;
 let stopCalledFor: string[] = [];
+let fakeStartResult: any = undefined;
+let displayMessages: any[] = [];
 
 // Controllable gate mock — tests set this before calling startClineLabSession
 let mockGateResult: { open: boolean; enabled: boolean; entitled: boolean; consented: boolean } | null = null;
@@ -43,13 +45,15 @@ function makeFakeCline(sessionId: string) {
         manifest: {},
         manifestPath: `/tmp/${sessionId}.json`,
         messagesPath: `/tmp/${sessionId}-messages.json`,
-        result: undefined,
+        result: fakeStartResult,
       };
     },
     send: async (input: any) => {
       lastSendInput = input;
       return { finishReason: "completed" };
     },
+    readDisplayMessages: async () => displayMessages,
+    readMessages: async () => displayMessages,
     stop: async (sessionId: string) => {
       stopCalledFor.push(sessionId);
       clineInstances.delete(sessionId);
@@ -92,6 +96,12 @@ const fakeDb = {
     findMany: async (args: any) => {
       const all = Array.from(sessions.values());
       const { where } = args;
+      if (where?.userId && !where?.status) {
+        return all
+          .filter((s: any) => s.userId === where.userId)
+          .sort((a: any, b: any) => (b.startedAt?.getTime?.() ?? 0) - (a.startedAt?.getTime?.() ?? 0))
+          .slice(0, args.take ?? all.length);
+      }
       if (where?.status === "active" && where?.lastActivityAt?.lt) {
         const cutoff = where.lastActivityAt.lt;
         return all.filter((s: any) => s.status === "active" && s.lastActivityAt.getTime() < cutoff.getTime());
@@ -155,13 +165,25 @@ const fakeDb = {
       docSteps.push(args.data);
       return { id: "doc-step-" + docSteps.length };
     },
+    findMany: async (args: any) => {
+      return docSteps
+        .filter((s: any) => s.sessionId === args.where?.sessionId)
+        .sort((a: any, b: any) => a.stepNo - b.stepNo);
+    },
   },
 };
 
 function installHook(): void {
   loader._load = function patched(request: string, parent: NodeModule | undefined, isMain: boolean) {
     if (request === "server-only") return {};
-    if (request === "@cline/sdk") return fakeClineCore;
+    if (request === "@cline/sdk") {
+      return {
+        ...fakeClineCore,
+        // Mirror the real SDK helper: OAuth providers get a scheme prefix.
+        formatProviderOAuthApiKey: (provider: string, auth: { access: string }) =>
+          provider === "cline" ? `workos:${auth.access}` : auth.access,
+      };
+    }
     if (request === "@cline/shared") {
       return { ToolApprovalRequest: {}, ToolApprovalResult: {} };
     }
@@ -185,6 +207,8 @@ beforeEach(() => {
   stopCalledFor = [];
   lastStartInput = null;
   lastSendInput = null;
+  fakeStartResult = undefined;
+  displayMessages = [];
   mockGateResult = null;
   installHook();
   // Load cline-agent.ts via require so Module._load hook intercepts its static imports
@@ -275,6 +299,8 @@ test("P0.5 — sendClineMessage: resumes existing session", async () => {
   } catch (e) {
     // expected: no network; we assert ClineCore.send was invoked with the session
   }
+  // TASK_252: turns are queued behind the start turn; allow the queue to drain.
+  await new Promise((resolve) => setTimeout(resolve, 5));
   assert.ok(lastSendInput, "ClineCore.send was called");
   assert.equal(lastSendInput.sessionId, started.sessionId);
   assert.equal(lastSendInput.prompt, "Continue recon");
@@ -354,9 +380,13 @@ test("P0.8 — sweepIdleSessions: stops sessions idle > 15 min", async () => {
 
   // Active session — should NOT be swept (lastActivityAt is now from create mock)
   const active = await startClineLabSession({ userId: "user-idle", prompt: "active work" });
+  await new Promise((resolve) => setTimeout(resolve, 5));
 
   // Idle session — last activity 21 min ago
   const idle = await startClineLabSession({ userId: "user-idle", prompt: "old work" });
+  // TASK_252: wait for the background turn to finish before ageing the session,
+  // otherwise finishTurn() refreshes lastActivityAt.
+  await new Promise((resolve) => setTimeout(resolve, 5));
   await fakeDb.cyberLabAgentSession.update({
     where: { id: idle.sessionId },
     data: { lastActivityAt: new Date(Date.now() - 21 * 60 * 1000) },
@@ -539,7 +569,7 @@ test("TASK_246.1 — connected OAuth session hands the DECRYPTED token to the SD
   const result = await startClineLabSession({ userId: "user-oauth", prompt: "Recon the target" });
   assert.equal(result.status, "started", `expected started, got ${result.status}: ${result.message}`);
 
-  assert.equal(lastStartInput.config.apiKey, "decrypted-oauth-access-token");
+  assert.equal(lastStartInput.config.apiKey, "workos:decrypted-oauth-access-token");
   assert.notEqual(lastStartInput.config.apiKey, "v1:not-the-key", "never pass the stored blob as a key");
 
   const session = sessions.get(result.sessionId);
@@ -547,7 +577,7 @@ test("TASK_246.1 — connected OAuth session hands the DECRYPTED token to the SD
   const { createHash } = await import("node:crypto");
   assert.equal(
     session.apiKeyHash,
-    createHash("sha256").update("decrypted-oauth-access-token").digest("hex"),
+    createHash("sha256").update("workos:decrypted-oauth-access-token").digest("hex"),
     "stored hash is of the real token, not the blob",
   );
 });
@@ -577,7 +607,7 @@ test("TASK_246.2 — explicit request key beats OAuth; OAuth beats the stored ma
 
   const oauth = await startClineLabSession({ userId: "user-order", prompt: "oauth key" });
   assert.equal(oauth.status, "started");
-  assert.equal(lastStartInput.config.apiKey, "oauth-token", "OAuth wins over the stored manual key");
+  assert.equal(lastStartInput.config.apiKey, "workos:oauth-token", "OAuth wins over the stored manual key");
   assert.equal(sessions.get(oauth.sessionId).modelProvider, "cline-free");
 });
 
@@ -619,6 +649,67 @@ test("TASK_246.4 — resume re-resolves a live OAuth token (not the stored blob)
 
   const resumed = await resumeClineSession(started.sessionId, "user-resume-oauth", "continue");
   assert.ok(resumed.status === "started" || resumed.status === "completed", resumed.message);
-  assert.equal(lastStartInput.config.apiKey, "refreshed-oauth-token");
+  assert.equal(lastStartInput.config.apiKey, "workos:refreshed-oauth-token");
   assert.equal(lastStartInput.config.providerId, "cline", "SDK provider id must never be our cline-free label");
+});
+
+// ---------------------------------------------------------------------------
+// TASK_252 — live transcript + actionable auth error
+// ---------------------------------------------------------------------------
+
+test("TASK_252.1 — listClineSessions returns the user's newest sessions", async () => {
+  mockGateResult = { open: true, enabled: true, entitled: true, consented: true };
+  settingsRows.set("user-list", { userId: "user-list", clineModelId: "claude-sonnet-4-6", clineApiEndpoint: null, clineApiKeyEnc: "sk-list", updatedAt: new Date() });
+  const { startClineLabSession, listClineSessions } = Cl;
+  const started = await startClineLabSession({ userId: "user-list", prompt: "hello" });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  const list = await listClineSessions("user-list");
+  assert.ok(list.some((s: any) => s.id === started.sessionId), "started session is listed");
+  assert.equal(list[0].id, started.sessionId, "newest first");
+});
+
+test("TASK_252.2 — transcript exposes assistant text and tool activity", async () => {
+  mockGateResult = { open: true, enabled: true, entitled: true, consented: true };
+  settingsRows.set("user-transcript", { userId: "user-transcript", clineModelId: "claude-sonnet-4-6", clineApiEndpoint: null, clineApiKeyEnc: "sk-tr", updatedAt: new Date() });
+  const { startClineLabSession, getClineSessionMessages } = Cl;
+  const started = await startClineLabSession({ userId: "user-transcript", prompt: "hello" });
+  displayMessages = [
+    { origin: "history", message: { role: "user", content: [{ type: "text", text: "hello" }] } },
+    {
+      origin: "history",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "plan the lesson" },
+          { type: "text", text: "Hi! Let's hunt bugs." },
+          { type: "tool-call", toolName: "run_commands", input: { command: "curl -I https://example.com" } },
+        ],
+      },
+    },
+  ];
+  const transcript = await getClineSessionMessages(started.sessionId, "user-transcript");
+  assert.ok(transcript, "transcript returned");
+  const assistant = transcript.messages.find((m: any) => m.role === "assistant");
+  assert.ok(assistant, "assistant message present");
+  assert.equal(assistant.text, "Hi! Let's hunt bugs.");
+  assert.equal(assistant.thinking, "plan the lesson");
+  assert.equal(assistant.tools[0].toolName, "run_commands");
+});
+
+test("TASK_252.3 — errorClass auth is surfaced as reconnect guidance", async () => {
+  mockGateResult = { open: true, enabled: true, entitled: true, consented: true };
+  settingsRows.set("user-auth-ui", { userId: "user-auth-ui", clineModelId: "claude-sonnet-4-6", clineApiEndpoint: null, clineApiKeyEnc: "sk-auth-ui", updatedAt: new Date() });
+  const { startClineLabSession, subscribeClineSession, getClineSessionStatus } = Cl;
+  const started = await startClineLabSession({ userId: "user-auth-ui", prompt: "hello" });
+
+  let listener: ((event: any) => void) | null = null;
+  const emitter = { subscribe: (cb: (event: any) => void) => { listener = cb; return () => {}; } };
+  const unsubscribe = subscribeClineSession(started.sessionId, emitter as any, "cline", "claude-sonnet-4-6", undefined);
+  assert.ok(listener, "subscribed");
+  (listener as unknown as (event: any) => void)({ type: "agent_event", payload: { event: { type: "error", errorClass: "auth", error: {} } } });
+
+  const status = await getClineSessionStatus(started.sessionId, "user-auth-ui");
+  assert.ok(status, "status returned");
+  assert.match(status.lastError ?? "", /reconnect/i);
+  unsubscribe?.();
 });
