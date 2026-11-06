@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { promises as fs } from "node:fs";
+import { promises as fs, accessSync, constants } from "node:fs";
 import path from "node:path";
 
 import { MB, scanSiteFile } from "./rules";
@@ -275,11 +275,52 @@ export function analyseArchive(entries: ZipEntry[], caps: ArchiveCaps): ArchiveV
 // The 7z shell-outs. These are the only non-pure parts; they are kept thin so the
 // logic above carries the tests. Every call has a hard timeout so a pathological
 // archive cannot wedge the process (§16.6).
+//
+// 7z is NOT guaranteed to be on PATH — it is absent entirely on the rebuilt VPS,
+// which previously surfaced as `spawn 7z ENOENT` on site upload. Resolve the
+// binary from an explicit env override, then common install locations, falling
+// back to a bare `7z` (PATH) only as a last resort.
 // ---------------------------------------------------------------------------
+
+let sevenZipPath: string | null = null;
+
+/** Resolve the `7z` binary to spawn. Cached for the process lifetime. */
+export function resolveSevenZip(): string {
+  if (sevenZipPath) return sevenZipPath;
+  const override = process.env.SEVEN_ZIP;
+  if (override) return (sevenZipPath = override);
+  for (const cand of ["/usr/local/bin/7z", "/usr/bin/7z", "/bin/7z"]) {
+    try {
+      accessSync(cand, constants.X_OK);
+      return (sevenZipPath = cand);
+    } catch {
+      // keep looking
+    }
+  }
+  return (sevenZipPath = "7z");
+}
 
 function run7z(args: string[], timeoutMs: number): Promise<{ stdout: string; stderr: string; code: number }> {
   return new Promise((resolve, reject) => {
-    const child = spawn("7z", args, { stdio: ["ignore", "pipe", "pipe"] });
+    const binary = resolveSevenZip();
+    // Fail fast with a clear, actionable message instead of a cryptic ENOENT
+    // when 7z is genuinely absent at an absolute path.
+    if (binary.includes("/")) {
+      try {
+        accessSync(binary, constants.X_OK);
+      } catch {
+        reject(
+          new Error(
+            "7z (p7zip) is not installed on this host, so site archives cannot " +
+              "be extracted. Install p7zip (macOS: `brew install p7zip`; " +
+              "Debian/Ubuntu: `apt-get install p7zip-full`), or set SEVEN_ZIP " +
+              "to the 7z binary path.",
+          ),
+        );
+        return;
+      }
+    }
+    const child = spawn(binary, args, { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     let killed = false;
