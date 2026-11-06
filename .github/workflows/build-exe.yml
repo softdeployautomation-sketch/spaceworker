@@ -15,6 +15,7 @@ on:
         type: choice
         options:
           - extractor
+          - mailer
           - devices
       tag_name:
         description: Release tag (e.g. v1.4.0) — leave blank to skip a GitHub Release

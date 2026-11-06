@@ -34,7 +34,11 @@ export function isLocalExeRuntime(): boolean {
 // because APP_BASE_URL is NOT one of the vars the assembler writes into the
 // EXE's .env.local either — reading it here would throw at import time inside
 // the very runtime this guards.
-export const HOSTED_APP_URL = "https://spaceworker.top";
+// TASK_XDEVICE_REFERRAL — the EXE's server-side proxy routes call back to the
+// hosted app via this URL. `spaceworker.top` now shows a joker (hidden) page, so
+// the EXE must reach the Next.js app directly at the VPS IP. Fallback is the
+// VPS IP — never the joker page — so license/auto-bind/account calls work.
+export const HOSTED_APP_URL = process.env.EXE_API_BASE_URL ?? "http://207.244.224.57:3500";
 
 /** Resolves an account path ("/signup", "/login") to the hosted app's real URL
  * when rendering inside the local EXE runtime; unchanged (relative) everywhere
