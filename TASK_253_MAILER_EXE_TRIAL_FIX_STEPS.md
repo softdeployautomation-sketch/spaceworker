@@ -211,6 +211,44 @@ returns 502; the gate hides the real reason behind a generic connectivity messag
 - [ ] `gh workflow run build-exe.yml -f variant=mailer` — download artifact
 - [ ] hand owner the installer + install steps (delete `_up_` first)
 
-## AFTER
+### DEPLOY 2 (AFTER) — run 42450127088 (commit 2fec325)
+- Success. Box `BUILD_ID` → **`LCGxTZTEdeTIsa8SLRL5B`**; service **active**; local 200.
+- `TN35EZ2K` in 2 runtime `.js` chunks.
+- `/` **200**; `/signup` **307** `/?error=referral_required`;
+  `/signup?ref=TN35EZ2K` → **200** and renders "Create your account";
+  `/signup?ref=BADCODE` → **307** error; `/r/TN35EZ2K` → **307 /login** + `Set-Cookie sw_ref`.
 
-<!-- Filled in after the work completes, with raw evidence. -->
+### EXE BUILD 1 — run 42450129663 (commit 2fec325)
+- All build steps **succeeded** (Windows installer produced).
+- **Failed only at "Upload installer artifact":** GitHub Actions artifact storage
+  quota ("Artifact storage quota has been hit"; repo had ~2.46 GB / 59 artifacts).
+- No installer retrievable from this run; the runner is gone.
+
+### EXE BUILD 2 — run 42451002510 (commit 2fec325) (AFTER)
+- Build steps **all succeeded**; installer uploaded to **draft release**
+  `v1.4.253-task253` as `SpaceWorker.OS.-.Mailer_0.1.0_x64-setup.exe`
+  (**44,229,746 bytes**, sha256
+  `3d00a040d45660f4c2fdb7f44a3931990a3db545a9871a52683c8cad614880bc`).
+- The trailing "Upload installer artifact" step **still failed** on the stale
+  artifact-quota counter (usage recalculates every 6–12h), even after the repo was
+  made public. The draft-release asset is unaffected and was downloaded successfully.
+- Extracted the installer and verified the **shipped** runtime:
+  `EXE_API_BASE_URL=https://spaceworker.top`, `BUILD_TARGET=mailer`,
+  `SPACEWORKER_LOCAL_EXE=true`; **0** old-base `.js` chunks; domain in 27 chunks;
+  `TN35EZ2K` in 2 chunks.
+
+### HOSTING (AFTER)
+- Nginx on `spaceworker.top` serves `.exe` directly from
+  `/opt/spaceworker/static` (regex location), so the public copy lives at:
+  `/opt/spaceworker/static/downloads/SpaceWorker-Mailer-Setup-0.1.0.exe`.
+- Public link:
+  **https://spaceworker.top/downloads/SpaceWorker-Mailer-Setup-0.1.0.exe**
+- Live check: **HTTP 200**, `Content-Length: 44229746`,
+  `Content-Disposition: attachment`; HTTPS-downloaded sha256 matches exactly.
+- Operational note: `systemctl restart spaceworker` hung in `deactivating` (old
+  next-server ignored SIGTERM). Recovered with `systemctl kill -s SIGKILL` +
+  `reset-failed` + `start`; service **active**, `/` 200, `trial-ping` 400 JSON.
+- Installer instructions for Windows: close the app, kill `spaceworker-exe`,
+  `msedgewebview2`, `node`, then delete
+  `%LOCALAPPDATA%\SpaceWorker OS - Mailer\_up_\` before running the new setup
+  (revealed live 2026-09-21: the installer does not refresh an existing `_up_`).
