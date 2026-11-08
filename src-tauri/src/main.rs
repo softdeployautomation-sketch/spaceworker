@@ -153,10 +153,19 @@ fn main() {
                 let win = app
                     .get_webview_window("main")
                     .expect("main window missing");
+                // Build-target-aware startup URL: mailer lands on /dashboard
+                // (Campaigns + Settings), extractor/desktop land on
+                // /dashboard/extract (Extract page). The devices wrapper never
+                // reaches this branch (handled above via WRAPPER_IDENTIFIER).
+                let startup_path = if app.config().identifier == "com.spaceworker-os.mailer" {
+                    "/dashboard"
+                } else {
+                    "/dashboard/extract"
+                };
                 thread::spawn(move || {
                     if wait_for_runtime(Duration::from_millis(300), 150) {
                         let url = Url::parse(&format!(
-                            "http://127.0.0.1:{}/dashboard/extract",
+                            "http://127.0.0.1:{}{startup_path}",
                             LOCAL_PORT
                         ))
                         .expect("invalid local url");
