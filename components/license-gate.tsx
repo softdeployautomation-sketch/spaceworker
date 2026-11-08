@@ -95,9 +95,16 @@ export function LicenseGate({ build, buyHref, children }: LicenseGateProps) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: value }),
       });
-      await res.json().catch(() => ({}));
+      const data = (await res.json().catch(() => ({}))) as { error?: unknown };
       if (!res.ok) {
-        setEmailError("Couldn't start your trial yet. Check your connection and try again.");
+        // TASK_253 — surface the server's own reason (rate limit, bad email,
+        // unreachable license server, …). The previous generic line hid a
+        // multi-hour outage behind "check your connection".
+        const serverError =
+          typeof data.error === "string" && data.error.trim() ? data.error.trim() : "";
+        setEmailError(
+          serverError || "Couldn't start your trial yet. Check your connection and try again.",
+        );
         setStarting(false);
         return;
       }
@@ -165,7 +172,7 @@ export function LicenseGate({ build, buyHref, children }: LicenseGateProps) {
         </Card>
 
         <p className="mt-4 max-w-md text-center text-xs text-fg-muted">
-          We'll use this email to deliver your license key when you upgrade — never
+          We&apos;ll use this email to deliver your license key when you upgrade — never
           for anything else. An internet connection is needed once, to start the trial.
         </p>
       </div>

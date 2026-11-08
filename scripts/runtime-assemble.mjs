@@ -118,8 +118,21 @@ stripSourceFiles(RUNTIME_STANDALONE);
 rmSync(path.join(RUNTIME_STANDALONE, ".env"), { force: true });
 rmSync(path.join(RUNTIME_STANDALONE, ".env.local"), { force: true });
 const localEnvPath = path.join(RUNTIME_STANDALONE, ".env.local");
+// TASK_253 — bake the hosted API base explicitly. The EXE's local proxy routes
+// call this origin for trial/activation/billing. The old `IP:3500` base is
+// dropped by ufw (trial-start timed out for every end user), and the retired
+// 164.68.105.96 box is gone, so refuse both and fall back to the HTTPS origin.
+const exeApiBaseUrl = (() => {
+  const raw = (process.env.EXE_API_BASE_URL ?? "").trim().replace(/\/+$/, "");
+  const dead =
+    /^https?:\/\/164\.68\.105\.96(?::\d+)?$/i.test(raw) ||
+    /^https?:\/\/207\.244\.224\.57:3500$/i.test(raw);
+  if (!raw || dead) return "https://spaceworker.top";
+  return raw;
+})();
 const envLines = [
   "SPACEWORKER_LOCAL_EXE=true",
+  `EXE_API_BASE_URL=${exeApiBaseUrl}`,
   `BUILD_TARGET=${process.env.BUILD_TARGET ?? "extractor"}`,
   `EXE_LICENSE_SECRET=${exeLicenseSecret}`,
   // TASK_181 — the devices-wrapper variant (build-exe.yml sets WRAPPER_MODE for

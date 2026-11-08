@@ -34,15 +34,57 @@ export function isLocalExeRuntime(): boolean {
 // because APP_BASE_URL is NOT one of the vars the assembler writes into the
 // EXE's .env.local either — reading it here would throw at import time inside
 // the very runtime this guards.
-// TASK_XDEVICE_REFERRAL — the EXE's server-side proxy routes call back to the
-// hosted app via this URL. `spaceworker.top` now shows a joker (hidden) page, so
-// the EXE must reach the Next.js app directly at the VPS IP. Fallback is the
-// VPS IP — never the joker page — so license/auto-bind/account calls work.
-export const HOSTED_APP_URL = process.env.EXE_API_BASE_URL ?? "http://207.244.224.57:3500";
+// TASK_253 (2026-11-08) — the EXE's server-side proxy routes call back to the
+// hosted app via this URL. The 2026-10/11 work briefly pointed it at
+// `http://207.244.224.57:3500`; that port is NOT in the box's ufw allowlist
+// (22/80/443/3402 + UDP ranges only), so every end-user trial-start timed out
+// and the license gate showed "check your connection". The public HTTPS origin
+// is the ONLY reachable path — `https://spaceworker.top/api/...` answers the
+// real Next app through nginx (proved 2026-11-08: trial-ping → 400 JSON).
+//
+// `EXE_API_BASE_URL` stays as an escape hatch for ops, but two known-dead values
+// are refused so an old build-time env cannot silently reintroduce the outage.
+const DEFAULT_HOSTED_APP_URL = "https://spaceworker.top";
+
+const KNOWN_DEAD_HOSTED_APP_URLS: RegExp[] = [
+  // Pre-2026-11-04 server (retired; the box was rebuilt on 207.244.224.57).
+  /^https?:\/\/164\.68\.105\.96(?::\d+)?$/i,
+  // Current box's public IP on the Next port — dropped by ufw.
+  /^https?:\/\/207\.244\.224\.57:3500$/i,
+];
+
+/** Pure resolver (exported for tests): override wins unless it is a known-dead base. */
+export function resolveHostedAppUrl(rawValue?: string | null): string {
+  const raw = (rawValue ?? process.env.EXE_API_BASE_URL ?? "").trim().replace(/\/+$/, "");
+  if (!raw) return DEFAULT_HOSTED_APP_URL;
+  if (KNOWN_DEAD_HOSTED_APP_URLS.some((re) => re.test(raw))) return DEFAULT_HOSTED_APP_URL;
+  return raw;
+}
+
+export { DEFAULT_HOSTED_APP_URL };
+
+export const HOSTED_APP_URL = resolveHostedAppUrl();
+
+/** TASK_253 — EXE signups default to the admin's universal referral link. The
+ * code rides on the /signup URL (the hosted page validates it and stamps the
+ * sw_ref cookie), NOT on a server-side fallback: web signups with no ref/invite
+ * must keep hitting the F8 403. Referral codes are public by design. */
+export const EXE_ADMIN_REFERRAL_CODE = "TN35EZ2K";
+
+function withAdminReferral(path: string): string {
+  const [pathname, query = ""] = path.split("?", 2);
+  const params = new URLSearchParams(query);
+  if (!params.has("ref")) params.set("ref", EXE_ADMIN_REFERRAL_CODE);
+  const qs = params.toString();
+  return qs ? `${pathname}?${qs}` : pathname;
+}
 
 /** Resolves an account path ("/signup", "/login") to the hosted app's real URL
  * when rendering inside the local EXE runtime; unchanged (relative) everywhere
- * else, including the real deployed web app. */
+ * else, including the real deployed web app. Only /signup gets the admin ref. */
 export function accountHref(path: string): string {
-  return isLocalExeRuntime() ? `${HOSTED_APP_URL}${path}` : path;
+  if (!isLocalExeRuntime()) return path;
+  const resolved =
+    path === "/signup" || path.startsWith("/signup?") ? withAdminReferral(path) : path;
+  return `${HOSTED_APP_URL}${resolved}`;
 }

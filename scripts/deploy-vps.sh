@@ -33,7 +33,7 @@
 #   scripts/deploy-vps.sh --verify-only
 #
 # ENV OVERRIDES
-#   VPS_HOST (default root@164.68.105.96)  SSH_KEY (default ~/.ssh/tacticalrmm_vps)
+#   VPS_HOST (default root@207.244.224.57)  SSH_KEY (default ~/.ssh/tacticalrmm_vps)
 #   APP_DIR  (default /opt/spaceworker)     SERVICE (default spaceworker.service)
 #   PORT     (default 3500)                 LOCAL_ROOT (default: repo root)
 #
@@ -53,7 +53,7 @@ trap '' TSTP TTIN TTOU
 # practical trigger. Kept explicit for the next reader.
 
 
-VPS_HOST="${VPS_HOST:-root@164.68.105.96}"
+VPS_HOST="${VPS_HOST:-root@207.244.224.57}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/tacticalrmm_vps}"
 APP_DIR="${APP_DIR:-/opt/spaceworker}"
 SERVICE="${SERVICE:-spaceworker.service}"

@@ -21,6 +21,9 @@ const signupSchema = z.object({
   acceptedTerms: z.literal(true, {
     errorMap: () => ({ message: "You must agree to the Terms of Service to create an account." }),
   }),
+  // Optional referral code for EXE/desktop clients that can't set cookies.
+  // Priority: body ref → ?ref= query param → sw_ref cookie (existing web flow).
+  ref: z.string().optional(),
 });
 
 /** Minimal HTML escape for the admin alert email (the address goes in a <strong>). */
@@ -66,18 +69,26 @@ export async function POST(request: Request) {
 
   const passwordHash = await hashPassword(parsed.password);
 
-  // Resolve the access token that brought this visitor in (stamped on /login or
-  // /signup via ?ref=CODE or the /r/:code redirect → sw_ref cookie). It is either
-  // a universal referral link, or — Model C — a personalized invite bound to a
-  // single email.
+  // TASK_253 — resolve the referral code that brought this visitor in. The
+  // EXE's /signup link carries ?ref=TN35EZ2K (see accountHref in
+  // lib/exe-runtime.ts), which the hosted /signup page validates and stamps
+  // onto the sw_ref cookie. There is deliberately NO server-side fallback:
+  // a truly ref-less request must still hit the F8 403 below, or the web
+  // signup becomes public.
+  //   1. body `ref` (EXE/desktop API clients that can't set cookies)
+  //   2. ?ref= query param
+  //   3. sw_ref cookie (set by /r/:code or /signup?ref=CODE web flow)
+  const url = new URL(request.url);
+  const refFromBody = parsed.ref ?? undefined;
+  const refFromQuery = url.searchParams.get("ref") ?? undefined;
   const cookieStore = await cookies();
-  const refCookie = cookieStore.get("sw_ref")?.value;
-  const referredLink =
-    refCookie ? await validateReferral(refCookie) : null;
+  const refFromCookie = cookieStore.get("sw_ref")?.value;
+  const refCode = refFromBody ?? refFromQuery ?? refFromCookie;
+
+  const referredLink = refCode ? await validateReferral(refCode) : null;
   // Only look for an invite if this isn't already a universal referral (a code
   // resolves to at most one of the two — separate tables).
-  const invite =
-    !referredLink && refCookie ? await getInviteByCode(refCookie) : null;
+  const invite = !referredLink && refCode ? await getInviteByCode(refCode) : null;
 
   if (invite) {
     if (!invite.isActive || invite.redeemedAt) {
