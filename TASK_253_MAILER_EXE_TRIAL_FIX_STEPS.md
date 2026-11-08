@@ -155,6 +155,43 @@ returns 502; the gate hides the real reason behind a generic connectivity messag
 - deploy.yml + deploy-vps.sh now target `207.244.224.57`; box unit names confirmed
   present before use (spaceworker, spaceworker-browser, extraction-worker).
 
+### DEPLOY 1 (AFTER) — run 42449262848
+- Success. Box `BUILD_ID` `LbeQ2zyJ7asC0PCHSq7s2` → **`xK4owCwEvqj__e5pQyu8J`**.
+- `EXE_API_BASE_URL=https://spaceworker.top` on the box; service **active**; local 200.
+- `TN35EZ2K` present in **19** server chunks. Old IP only in `.js.map` source maps
+  (comments), **not** runtime `.js`.
+- Public `/` 200; `trial-ping` no-email → **400** correct JSON.
+- `/signup` (no ref) → 307 `/?error=referral_required` (F8 intact).
+- **Live bug found:** `/signup?ref=TN35EZ2K` → 307 `/?error=referral_required`.
+  Cause: Next **16.2.9** makes `searchParams` a **Promise**; `app/signup/page.tsx`
+  read `searchParams.ref` synchronously, so the query ref was always `undefined`
+  (pre-existing; `/r/TN35EZ2K` cookie flow still works). The EXE link uses `?ref=`,
+  so it must be fixed.
+
+### E9 — `app/signup/page.tsx` async searchParams (BEFORE)
+- Intent: `await searchParams` and read `ref` from the resolved object. No other
+  behavior change; no-ref still redirects with `?error=referral_required`.
+
+### E9 — `app/signup/page.tsx` (AFTER)
+- Signature takes `Promise<…>`; `refQuery` reads the awaited object.
+
+### E10 — signup ref transport (BEFORE)
+- Awaiting `searchParams` alone is not enough: Next 16 forbids `cookies().set()` in a
+  Server Component render, so the page's old `cookieStore.set(refQuery, …)` would throw
+  once `?ref=` is finally visible. Transport the ref in the POST body instead (the
+  route already accepts `ref`): `AuthForm` reads `?ref=` and includes it for signup;
+  the page validates the query for display but no longer writes a cookie.
+- Also pin the body-ref path with a focused F8/EXE test.
+
+### E10 — `components/auth-form.tsx` + `app/signup/page.tsx` + test (AFTER)
+- `AuthForm` (signup only) sends `ref` from `useSearchParams()`; page no longer sets a
+  cookie in render; body-ref test added (201 with no cookie).
+- `npx tsc --noEmit` → **0**; `npx eslint` on the three files → **0**.
+- `npx tsx --test tests/admin-signup-alert.test.ts tests/exe-runtime-url.test.ts`
+  → **16 pass / 0 fail** (new body-ref case included).
+- Both `/login` and `/signup` are `force-dynamic`, so `useSearchParams` needs no
+  Suspense boundary at build.
+
 ## GATES
 
 - [ ] `npx tsc --noEmit`

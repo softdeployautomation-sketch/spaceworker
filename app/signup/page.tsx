@@ -24,7 +24,10 @@ const REFERRAL_COOKIE = "sw_ref";
 export default async function SignupPage({
   searchParams,
 }: {
-  searchParams: { [key: string]: string | string[] | undefined };
+  // Next 16: searchParams is a Promise. Reading it synchronously made
+  // ?ref=CODE invisible, so every EXE "Get started" link bounced to
+  // /?error=referral_required even though the code was valid. Await it.
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }) {
   // Same gap as app/login/page.tsx — an already-logged-in visitor shouldn't
   // see a signup form.
@@ -32,9 +35,10 @@ export default async function SignupPage({
 
   const cookieStore = await cookies();
   const refCookie = cookieStore.get(REFERRAL_COOKIE)?.value;
-  const refQuery = Array.isArray(searchParams.ref)
-    ? searchParams.ref[0]
-    : searchParams.ref;
+  const resolvedSearchParams = await searchParams;
+  const refQuery = Array.isArray(resolvedSearchParams.ref)
+    ? resolvedSearchParams.ref[0]
+    : resolvedSearchParams.ref;
 
   // Access gate (Model C): a valid universal referral OR an active, unredeemed
   // personalized invite lets the visitor reach the signup form. The hard invite
@@ -44,13 +48,10 @@ export default async function SignupPage({
   if (!hasAccess && refQuery) {
     hasAccess = await hasAccessGate(refQuery);
     if (!hasAccess) redirect("/?error=referral_required");
-    cookieStore.set(REFERRAL_COOKIE, refQuery, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      path: "/",
-      maxAge: 60 * 60 * 24 * 30,
-    });
+    // Next 16 forbids cookies().set() during a Server Component render, so the
+    // ref is NOT stamped here. <AuthForm> forwards ?ref= in the signup POST
+    // body, and the route validates/attributes it there. (The /r/:code route
+    // handler still sets sw_ref for the normal web flow.)
   }
 
   if (!hasAccess) redirect("/?error=referral_required");

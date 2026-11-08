@@ -119,7 +119,10 @@ function freshRoute() {
       }),
     },
     "@/lib/referral": {
-      validateReferral: async () => state.referralLink,
+      // Code-sensitive so a test can prove WHERE the code came from (cookie vs
+      // body/query); the default state uses the same REF12345 in both places.
+      validateReferral: async (code: string) =>
+        state.referralLink && state.referralLink.code === code ? state.referralLink : null,
       attributeReferral: async () => undefined,
       getUserReferralLink: async () => ({
         id: "link_1",
@@ -225,6 +228,25 @@ test("F8: a signup with NO sw_ref code and NO invite is refused with 403 — the
   assert.equal(calls.telegramAlerts.length, 0, "no admin alert on a refused signup");
   const body = res.body as { error?: string };
   assert.ok(typeof body.error === "string" && body.error.length > 0, "a human-readable reason is returned");
+});
+
+test("F8/EXE: a body ref grants access with NO sw_ref cookie — 201 (EXE attribution path)", async () => {
+  state.refCookie = undefined;
+  state.referralLink = { id: "link_exe", code: "BODYREF1", ownerEmail: "owner@x.dev" };
+  const route = freshRoute();
+  const req = new Request("http://localhost/api/auth/signup", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      email: "newuser@x.dev",
+      password: "hunter2hunter2",
+      acceptedTerms: true,
+      ref: "BODYREF1",
+    }),
+  });
+  const res = await route.POST(req);
+  assert.equal(res.status, 201, "the EXE body ref is accepted without a cookie");
+  assert.equal(calls.created.length, 1, "the account exists");
 });
 
 test("F8: a valid universal referral link (sw_ref → ReferralLink) still signs up — 201", async () => {

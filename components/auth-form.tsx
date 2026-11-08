@@ -1,6 +1,6 @@
 "use client";
 
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useState } from "react";
 
@@ -11,6 +11,12 @@ export function AuthForm(props: {
   initialEmail?: string;
 }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  // TASK_253 — the EXE's "Get started" link is /signup?ref=TN35EZ2K. Next 16
+  // cannot set cookies in the page render, so carry the ref in the POST body
+  // (the signup route already validates body.ref). Web /r/:code still uses the
+  // sw_ref cookie and this is simply absent there.
+  const ref = props.mode === "signup" ? searchParams?.get("ref") ?? undefined : undefined;
   const [email, setEmail] = useState(props.initialEmail ?? "");
   const [password, setPassword] = useState("");
   const [acceptedTerms, setAcceptedTerms] = useState(false);
@@ -28,7 +34,9 @@ export function AuthForm(props: {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(
-          props.mode === "signup" ? { email, password, acceptedTerms } : { email, password },
+          props.mode === "signup"
+            ? { email, password, acceptedTerms, ...(ref ? { ref } : {}) }
+            : { email, password },
         ),
       });
       const data = await res.json().catch(() => ({}));
