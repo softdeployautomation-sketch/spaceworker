@@ -80,6 +80,7 @@ const NAV_ITEMS: Omit<NavItem, "active">[] = [
 // exact ExeBuildTarget values from lib/exe-build-target.ts.
 const BUILD_ALLOWED_HREFS: Record<string, Set<string> | undefined> = {
   extractor: new Set(["/dashboard", "/dashboard/extract", "/dashboard/settings"]),
+  mailer: new Set(["/dashboard", "/dashboard/campaigns", "/dashboard/settings"]),
 };
 
 // TASK_181 D1 (owner, 2026-10-07, Option B) — the wrapper build's nav: Devices +

@@ -86,6 +86,8 @@
     "exe:dev:server": "bash scripts/run-exe-dev.sh",
     "exe:build:web": "next build && node scripts/runtime-assemble.mjs",
     "exe:build:extractor": "tauri build --config src-tauri/tauri.extractor.conf.json",
+    "exe:build:mailer": "tauri build --config src-tauri/tauri.mailer.conf.json",
+    "exe:dev:mailer": "BUILD_TARGET=mailer bash scripts/run-exe-dev.sh",
     "exe:icon": "tauri icon"
   },
   "dependencies": {

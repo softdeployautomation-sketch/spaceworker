@@ -2,6 +2,9 @@
   "$schema": "https://schema.tauri.app/config/v2",
   "productName": "SpaceWorker OS - Mailer",
   "identifier": "com.spaceworker-os.mailer",
+  "build": {
+    "devUrl": "http://localhost:3400/dashboard"
+  },
   "bundle": {
     "targets": ["nsis"],
     "createUpdaterArtifacts": false,
