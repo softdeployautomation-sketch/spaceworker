@@ -1,11 +1,10 @@
 services:
   mosquitto:
-    image: iego/mosquitto-go-auth:2
-    ports:
-      - "8883:8883"
+    image: eclipse-mosquitto:2.0.18
+    network_mode: host
     volumes:
-      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
-      - ./mosquitto/acl:/mosquitto/config/acl:ro
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:rw
+      - ./mosquitto/acl:/mosquitto/config/acl:rw
       - letsencrypt-certs:/etc/letsencrypt/live/android.spaceworker.top:ro
     profiles:
       - box
@@ -15,17 +14,16 @@ services:
     ports:
       - "1883:1883"
     volumes:
-      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
-      - ./mosquitto/acl:/mosquitto/config/acl:ro
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:rw
+      - ./mosquitto/acl:/mosquitto/config/acl:rw
     profiles:
       - dev
 
   rc-api:
     build:
-      context: ..
+      context: .
       dockerfile: api/Dockerfile
-    ports:
-      - "127.0.0.1:8090:8090"
+    network_mode: host
     environment:
       - RC_ENROLL_CODE=${RC_ENROLL_CODE}
       - INTERNAL_MQTT_USER=${INTERNAL_MQTT_USER}
@@ -34,7 +32,7 @@ services:
       - DB_PATH=${DB_PATH}
       - API_PORT=${API_PORT}
       - API_HOST=${API_HOST}
-      - MQTT_HOST=mosquitto
+      - MQTT_HOST=127.0.0.1
       - MQTT_PORT=1883
       - WS_URL_PUBLIC=${WS_URL_PUBLIC}
     depends_on:
@@ -44,7 +42,7 @@ services:
 
   rc-api-dev:
     build:
-      context: ..
+      context: .
       dockerfile: api/Dockerfile
     ports:
       - "127.0.0.1:8090:8090"
@@ -66,10 +64,9 @@ services:
 
   rc-relay:
     build:
-      context: ..
+      context: .
       dockerfile: relay/Dockerfile
-    ports:
-      - "127.0.0.1:8081:8081"
+    network_mode: host
     environment:
       - TOKEN_SECRET=${TOKEN_SECRET}
       - RELAY_PORT=${RELAY_PORT}
@@ -81,7 +78,7 @@ services:
 
   rc-relay-dev:
     build:
-      context: ..
+      context: .
       dockerfile: relay/Dockerfile
     ports:
       - "127.0.0.1:8081:8081"

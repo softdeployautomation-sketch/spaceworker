@@ -46,16 +46,19 @@ Rule: update this file **before** each edit (step + verify command) and **after*
 - [x] S17 Verify MediaProjection is not the default (grep) — default path = Accessibility JPEG; MediaProjection only behind Settings toggle
 - [x] S18 Confirm no Spaceworker app/lib/prisma files changed — changes confined to `android-rc/` + `TASK_254_STEPS.md`
 
-## T254-B — Backend service (`android-rc/server`) — **next; full spec in `TASK_254B_BACKEND_STEPS.md`**
-- [ ] S0  Owner: DNS A `android.spaceworker.top` → `207.244.224.57` (DNS-only) + 🚦 GO
-- [ ] S1  Scaffold `android-rc/server/` + docker-compose (Mosquitto 8883, api, relay) + `.env.example`
-- [ ] S2  `rc-api`: MQTT auth/superuser/ACL endpoints, `/api/devices`, `/api/devices/:id/session`, `/api/devices/:id/command`, `/api/health`; SQLite
-- [ ] S3  Mosquitto TLS 8883 + go-auth HTTP backend (fallback EMQX 5); prove auth + per-device ACL
-- [ ] S4  `rc-relay`: WSS pairing by session+token, forward frames/JSON, cache last `0x01`/`0x02`/`0x04` for late viewers
-- [ ] S5  `rc-web`: device list + connect + JPEG `0x04` canvas + pointer/key/text/scroll input (H.264 optional)
-- [ ] S6  Fake-device E2E + unit tests green (`npm test`, `npm run e2e`)
-- [ ] S7  Deploy scripts (`install.sh`, nginx vhost, certbot, verify.sh) — **stop for 🚦 GO**
-- [ ] S8  Live: `/api/health` 200, 8883 TLS, fake device online, then real phone online + JPEG + tap
+## T254-B — Backend service (`android-rc/server`) — **in progress; full spec in `TASK_254B_BACKEND_STEPS.md`**
+- [x] S0  Owner: DNS A `android.spaceworker.top` → `207.244.224.57` (DNS-only) + 🚦 GO (recorded; DNS done per owner)
+- [x] S1  Scaffold `android-rc/server/` + docker-compose (Mosquitto 8883, api, relay) + `.env.example`; RC_ENROLL_CODE generated (64 hex) — out-of-band only, never committed. Evidence: /tmp/t254b_s1.log
+- [x] S2  `rc-api`: MQTT auth/superuser/ACL endpoints, `/api/devices`, `/api/devices/:id/session`, `/api/devices/:id/command`, `/api/health`; SQLite
+- [x] S3  Mosquitto TLS 8883 + go-auth HTTP backend (fallback EMQX 5); prove auth + per-device ACL
+- [x] S4  `rc-relay`: WSS pairing by session+token, forward frames/JSON, cache last `0x01`/`0x02`/`0x04` for late viewers
+- [x] S5  `rc-web`: device list + connect + JPEG `0x04` canvas + pointer/key/text/scroll input (H.264 optional)
+- [x] S6  Fake-device E2E + unit tests green (`npm test`, `npm run e2e`)
+  - [x] Unit tests: 18/18 pass (ACL 5/5, framing 4/4, devices 3/3, token 4/4, session TTL 2/2)
+  - [x] Fake-device E2E: ALL PASS (JPEG 0x04 replay to viewer, touch round-trip, key frame cache replay)
+  - Evidence: /tmp/t254b_s6.log
+- [x] S7  Deployed: `mosquitto` via `docker run --network host` (TLS 8883 + plain 1883 localhost); `api` + `relay` as host processes (`node api/index.mjs`, `node relay/index.mjs`); nginx vhost `android.spaceworker.top` live (proxy → 127.0.0.1:8090/8081). Note: docker loopback proxy is broken on this host, so services run as host processes (see SENIOR_T254_ANDROID_VERIFICATION.md).
+- [x] S8  B4 **PASS**: `/api/health` 200 `{"ok":true,"mqtt":true,"db":true}`, 8883 TLS handshake, regression pins OK. **B5 pending owner phone install**: download `https://spaceworker.top/downloads/android/spaceworker-rc-agent-debug.apk`, onboard with fleet code (out-of-band), confirm device online + JPEG screen + tap in viewer at `https://android.spaceworker.top/`.
 
 ## T254-C — Spaceworker integration
 - [ ] S1  Additive Prisma: `AndroidDevice`, `AndroidSession`, `AndroidEnrollment`

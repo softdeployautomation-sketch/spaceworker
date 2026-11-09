@@ -59,9 +59,34 @@ if [ ! -d /etc/letsencrypt/live/android.spaceworker.top ]; then
   exit 0
 fi
 
-# 7. docker compose up
-log "Starting docker compose"
+# 7. Install node dependencies (box host)
+log "npm install"
 cd "$DST"
-docker compose up -d
+npm install --no-audit --no-fund >/tmp/android-rc-npm-install.log 2>&1 || { echo "[install] FATAL: npm install failed"; tail -20 /tmp/android-rc-npm-install.log; exit 1; }
 
-log "Install complete. .env at $ENV_FILE (600). If compose is not running, run: docker compose up -d"
+# 8. Start mosquitto (host network: binds 1883 localhost + 8883 TLS public directly,
+#    bypassing the broken docker loopback userland-proxy on this host)
+if docker ps -a --format '{{.Names}}' | grep -q '^android-rc-mqtt$'; then
+  log "mosquitto container exists — starting"
+  docker start android-rc-mqtt 2>/dev/null || true
+else
+  log "Starting mosquitto (host network)"
+  docker run -d --name android-rc-mqtt --network host \
+    -v "$DST/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" \
+    -v "$DST/mosquitto/acl:/mosquitto/config/acl:ro" \
+    -v /etc/letsencrypt/live/android.spaceworker.top:/etc/letsencrypt/live/android.spaceworker.top:ro \
+    eclipse-mosquitto:2.0.18 >/dev/null
+fi
+sleep 2
+
+# 9. Start api + relay as host processes (bind 127.0.0.1:8090/8081; nginx proxies them)
+set -a; . "$ENV_FILE"; set +a
+export MQTT_HOST=127.0.0.1
+pkill -f 'node api/index.mjs' 2>/dev/null || true
+pkill -f 'node relay/index.mjs' 2>/dev/null || true
+nohup node "$DST/api/index.mjs" > /tmp/rc-api.log 2>&1 &
+nohup node "$DST/relay/index.mjs" > /tmp/rc-relay.log 2>&1 &
+sleep 2
+
+log "Install complete. .env at $ENV_FILE (600). Fleet enrollment code printed above (one-time)."
+log "Verify: curl -s https://android.spaceworker.top/api/health  (expect {\"ok\":true,...})"

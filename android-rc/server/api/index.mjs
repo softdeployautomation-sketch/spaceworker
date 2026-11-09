@@ -7,7 +7,7 @@ const app = express();
 app.use(express.json());
 
 const PORT = Number(process.env.API_PORT || 8090);
-const HOST = process.env.API_HOST || '127.0.0.1';
+const HOST = process.env.API_HOST || '0.0.0.0';
 const RC_ENROLL_CODE = process.env.RC_ENROLL_CODE;
 const INTERNAL_MQTT_USER = process.env.INTERNAL_MQTT_USER || 'rc-api';
 const INTERNAL_MQTT_PASSWORD = process.env.INTERNAL_MQTT_PASSWORD || 'internal';

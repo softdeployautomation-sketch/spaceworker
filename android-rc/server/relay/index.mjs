@@ -3,7 +3,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import crypto from 'node:crypto';
 
 const PORT = Number(process.env.RELAY_PORT || 8081);
-const HOST = process.env.RELAY_HOST || '127.0.0.1';
+const HOST = process.env.RELAY_HOST || '0.0.0.0';
 const TOKEN_SECRET = process.env.TOKEN_SECRET;
 
 function verifyToken(token) {
