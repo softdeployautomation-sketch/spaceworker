@@ -1,0 +1,22 @@
+{
+  "name": "android-rc-server",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "RC backend: Mosquitto auth/ACL API, WebSocket relay, JPEG viewer",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev:api": "node api/index.mjs",
+    "dev:relay": "node relay/index.mjs",
+    "test": "node --test test/*.test.mjs",
+    "e2e": "node test/fake-device.mjs"
+  },
+  "dependencies": {
+    "aedes": "^0.45.2",
+    "express": "^4.21.2",
+    "mqtt": "^5.10.1",
+    "sql.js": "^1.10.0",
+    "ws": "^8.18.0"
+  }
+}

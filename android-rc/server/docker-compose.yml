@@ -1,0 +1,103 @@
+services:
+  mosquitto:
+    image: iego/mosquitto-go-auth:2
+    ports:
+      - "8883:8883"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto/acl:/mosquitto/config/acl:ro
+      - letsencrypt-certs:/etc/letsencrypt/live/android.spaceworker.top:ro
+    profiles:
+      - box
+
+  mosquitto-dev:
+    image: eclipse-mosquitto:2.0.18
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto/acl:/mosquitto/config/acl:ro
+    profiles:
+      - dev
+
+  rc-api:
+    build:
+      context: ..
+      dockerfile: api/Dockerfile
+    ports:
+      - "127.0.0.1:8090:8090"
+    environment:
+      - RC_ENROLL_CODE=${RC_ENROLL_CODE}
+      - INTERNAL_MQTT_USER=${INTERNAL_MQTT_USER}
+      - INTERNAL_MQTT_PASSWORD=${INTERNAL_MQTT_PASSWORD}
+      - TOKEN_SECRET=${TOKEN_SECRET}
+      - DB_PATH=${DB_PATH}
+      - API_PORT=${API_PORT}
+      - API_HOST=${API_HOST}
+      - MQTT_HOST=mosquitto
+      - MQTT_PORT=1883
+      - WS_URL_PUBLIC=${WS_URL_PUBLIC}
+    depends_on:
+      - mosquitto
+    profiles:
+      - box
+
+  rc-api-dev:
+    build:
+      context: ..
+      dockerfile: api/Dockerfile
+    ports:
+      - "127.0.0.1:8090:8090"
+    environment:
+      - RC_ENROLL_CODE=${RC_ENROLL_CODE}
+      - INTERNAL_MQTT_USER=${INTERNAL_MQTT_USER}
+      - INTERNAL_MQTT_PASSWORD=${INTERNAL_MQTT_PASSWORD}
+      - TOKEN_SECRET=${TOKEN_SECRET}
+      - DB_PATH=${DB_PATH}
+      - API_PORT=${API_PORT}
+      - API_HOST=${API_HOST}
+      - MQTT_HOST=127.0.0.1
+      - MQTT_PORT=1883
+      - WS_URL_PUBLIC=ws://localhost:8081/relay
+    depends_on:
+      - mosquitto-dev
+    profiles:
+      - dev
+
+  rc-relay:
+    build:
+      context: ..
+      dockerfile: relay/Dockerfile
+    ports:
+      - "127.0.0.1:8081:8081"
+    environment:
+      - TOKEN_SECRET=${TOKEN_SECRET}
+      - RELAY_PORT=${RELAY_PORT}
+      - RELAY_HOST=${RELAY_HOST}
+    depends_on:
+      - rc-api
+    profiles:
+      - box
+
+  rc-relay-dev:
+    build:
+      context: ..
+      dockerfile: relay/Dockerfile
+    ports:
+      - "127.0.0.1:8081:8081"
+    environment:
+      - TOKEN_SECRET=${TOKEN_SECRET}
+      - RELAY_PORT=${RELAY_PORT}
+      - RELAY_HOST=${RELAY_HOST}
+    depends_on:
+      - rc-api-dev
+    profiles:
+      - dev
+
+volumes:
+  letsencrypt-certs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /etc/letsencrypt/live/android.spaceworker.top

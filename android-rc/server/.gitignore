@@ -1,0 +1,10 @@
+.env
+node_modules/
+npm-debug.log*
+data/
+*.sqlite
+mosquitto/certs/*.pem
+mosquitto/certs/*.crt
+mosquitto/certs/*.key
+coverage/
+.DS_Store

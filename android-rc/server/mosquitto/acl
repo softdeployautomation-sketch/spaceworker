@@ -1,0 +1,9 @@
+# Fallback static ACL for Mosquitto (T254-B)
+# Primary auth/ACL is enforced by rc-api via go-auth HTTP backend.
+# This file is only consulted if go-auth is unreachable.
+
+# Internal API user gets full access
+user rc-api
+topic rc/#
+
+# All other users: no default access (go-auth grants per-device topics dynamically)
