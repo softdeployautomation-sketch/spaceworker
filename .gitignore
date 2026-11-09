@@ -38,3 +38,8 @@ browser-sessions-tmp/
 # these). The packed .crx is a build output like the rest of engine-dist.
 *.pem
 *.crx
+# Installer binaries exceed GitHub's 100 MB per-file push limit (the merged
+# mailer runtime is ~133 MB with PGlite). The mailer EXE is built by the
+# "Build EXE" workflow and hosted on the VPS at public/downloads/ — see
+# PLAN_FIX_MAILER_EXE.md. The directory itself stays tracked via .gitkeep.
+public/downloads/*.exe

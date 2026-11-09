@@ -60,11 +60,30 @@ app was fine. This is a regression from branch divergence, not a new bug.
   - `POST /api/exe-license/status` → **200** with machine id / trial state
   - boot log: `[local-exe] database ready; auto-drain loop started`
 
-## Remaining steps
-- [ ] Push `main` to origin.
-- [ ] Trigger Build EXE (variant=mailer), download the new installer.
-- [ ] Replace `public/downloads/SpaceWorker-Mailer-Setup-0.1.0.exe`, commit, push.
-- [ ] Trigger Build & Deploy, verify the download URL + owner install test.
+## Shipped (2026-11-09)
+- [x] Pushed `main` (`20eacc1`).
+- [x] Build EXE variant=mailer run `42561608865` → success; installer
+      `139,751,277` bytes, sha256 `07e7877e8efe91b5389308c7542dae8621efed96fb66e79a4dcc57cd5f4ed275`.
+- [x] Build & Deploy run `42564581752` (workflow_dispatch) → success at
+      `20eacc1`; box `BUILD_ID=gCvtdYrI13TtbqwDVpQt6`; the tier-3 gate string
+      is present in `.next/server/chunks`; `tests/xdevice-tier.test.ts` 19/19.
+- [x] Installer hosted on the VPS (see "Download" below).
+- [ ] Owner: install and test campaign create/send, mailbox add, License panel.
+
+## Download
+- https://dl.instaweb.top/SpaceWorker-Mailer-Setup-0.1.0.exe
+- https://spaceworker.top/downloads/SpaceWorker-Mailer-Setup-0.1.0.exe
+- `Content-Length: 139751277`; sha256 verified on the box and over HTTPS.
+- Box path: `/opt/spaceworker/public/downloads/SpaceWorker-Mailer-Setup-0.1.0.exe`
+  (`trmm:trmm`, `0644`), served by nginx `location /downloads/`.
+
+## Why the EXE is not committed
+The merged runtime is ~133 MB (PGlite/Postgres WASM + Prisma adapter + Node),
+over GitHub's 100 MB per-file push limit. `public/downloads/*.exe` is therefore
+gitignored and `.gitkeep` keeps the dir; the binary is a box-side artifact.
+Future `Build & Deploy` runs no longer include it, so they cannot overwrite the
+VPS copy. To refresh: run **Build EXE** (variant=mailer), then scp the installer
+to the box path above. Git LFS is the follow-up if we want it repo-shipped.
 
 ## Notes
 - Working tree still has unrelated local edits (Vantra/cyberlab/TASK_249); they
