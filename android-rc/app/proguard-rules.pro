@@ -1,0 +1,10 @@
+-keep class top.spaceworker.rcagent.** { *; }
+-keep class com.hmdm.** { *; }
+-keep class com.samsung.android.knox.** { *; }
+-keep class org.eclipse.paho.** { *; }
+-keep class org.webrtc.** { *; }
+-keep class org.webrtc.audio.** { *; }
+-dontwarn org.eclipse.paho.**
+-dontwarn javax.annotation.**
+-dontwarn org.slf4j.**
+-dontwarn org.webrtc.**

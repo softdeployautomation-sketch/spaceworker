@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<restrictions xmlns:android="http://schemas.android.com/apk/res/android">
+    <restriction
+        android:key="host"
+        android:title="@string/mdm_host"
+        android:description="@string/mdm_host_desc"
+        android:restrictionType="string"
+        android:defaultValue=""/>
+    <restriction
+        android:key="mqtt"
+        android:title="@string/mdm_mqtt"
+        android:description="@string/mdm_mqtt_desc"
+        android:restrictionType="string"
+        android:defaultValue=""/>
+    <restriction
+        android:key="mqtt_password"
+        android:title="@string/mdm_mqtt_password"
+        android:restrictionType="string"
+        android:defaultValue=""/>
+    <restriction
+        android:key="device_id"
+        android:title="@string/mdm_device_id"
+        android:description="@string/mdm_device_id_desc"
+        android:restrictionType="string"
+        android:defaultValue=""/>
+    <restriction
+        android:key="relay_port"
+        android:title="@string/mdm_relay_port"
+        android:description="@string/mdm_relay_port_desc"
+        android:restrictionType="integer"
+        android:defaultValue="0"/>
+</restrictions>

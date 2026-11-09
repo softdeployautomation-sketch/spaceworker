@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">RC Agent</string>
+    <string name="a11y_desc">Remote control input</string>
+    <string name="fgs_title">RC capture</string>
+    <string name="fgs_text">Screen capture is running</string>
+    <string name="proj_title">UKPC Remote</string>
+    <string name="proj_text">Start screen capture</string>
+    <string name="proj_waiting">Waiting for Start now…</string>
+    <string name="mdm_host">Backend / relay host</string>
+    <string name="mdm_host_desc" formatted="false">https://remote.example.com — Headwind có thể dùng %SERIAL%</string>
+    <string name="mdm_mqtt">MQTT broker</string>
+    <string name="mdm_mqtt_desc">mqtts://host:8883 hoặc ssl://host:8883. Trống = theo host</string>
+    <string name="mdm_mqtt_password">MQTT password</string>
+    <string name="mdm_device_id">Device ID</string>
+    <string name="mdm_device_id_desc" formatted="false">MQTT username. Đặt %SERIAL% để dùng serial máy</string>
+    <string name="mdm_relay_port">Relay WebSocket port</string>
+    <string name="mdm_relay_port_desc">Trống hoặc 0 = mặc định (443 wss / 3001 ws)</string>
+    <string name="connection_title">Cài đặt kết nối</string>
+    <string name="connection_save">Lưu &amp; kết nối MQTT</string>
+    <string name="connection_open">Cài đặt kết nối</string>
+    <string name="connection_host_hint">https://relay.example.com</string>
+    <string name="connection_mqtt_hint">mqtts://host:8883 — trống = theo host</string>
+    <string name="connection_pass_hint">MQTT password (trống = theo cấu hình MDM)</string>
+    <string name="connection_device_hint">Trống = ANDROID_ID</string>
+    <string name="connection_port_hint">443 hoặc 3001</string>
+    <string name="connection_bad_host">Backend URL không hợp lệ</string>
+    <string name="connection_bad_mqtt">MQTT không hợp lệ</string>
+    <string name="connection_bad_port">Relay port không hợp lệ</string>
+
+    <!-- BYOD enrollment -->
+    <string name="enroll_server_hint">https://android.spaceworker.top</string>
+    <string name="enroll_code_hint">Enrollment code (from Spaceworker)</string>
+    <string name="enroll_row_a11y">Grant Accessibility so the agent can read the screen + inject input.</string>
+    <string name="enroll_row_notif">Allow notifications so the agent stays alive in the background.</string>
+    <string name="enroll_row_battery">Exempt from battery optimization so sessions survive doze.</string>
+    <string name="enroll_row_overlay">Allow display over other apps for the maintenance overlay.</string>
+    <string name="open_accessibility">Open Accessibility settings</string>
+    <string name="open_notifications">Open Notification settings</string>
+    <string name="open_battery">Open Battery optimization</string>
+    <string name="open_overlay">Open Overlay permission</string>
+    <string name="enroll_go">Set up &amp; connect</string>
+    <string name="enroll_connect">Connect</string>
+    <string name="enroll_all_ready">All grants ready.</string>
+    <string name="enroll_tap_go">Tap “Set up &amp; connect” to fix the next missing grant.</string>
+    <string name="enroll_bad_server">Please enter a valid server URL.</string>
+    <string name="enroll_connecting">Enrolling + connecting…</string>
+    <string name="enroll_ready">Ready — remote control active.</string>
+    <string name="enroll_qr_no_scanner">No QR scanner app found. Paste the enrollment code instead.</string>
+
+    <!-- Maintenance overlay -->
+    <string name="maintenance_label">Maintenance in progress</string>
+    <string name="maintenance_subtitle">Remote control session locked for maintenance</string>
+</resources>

@@ -32,7 +32,8 @@ useful immediately.
 
 ## 1. What SpaceWorker is
 
-A hosted SaaS on one VPS (`164.68.105.96`, `/opt/spaceworker`) that does three things,
+A hosted SaaS on one VPS (**`207.244.224.57`** since the 2026-11-04 rebuild;
+`/opt/spaceworker`; the old `164.68.105.96` is dead) that does three things,
 plus a desktop product line:
 
 | Pillar | What it does | Lives in |
@@ -43,11 +44,14 @@ plus a desktop product line:
 
 **Two satellite systems it depends on:**
 
-- **Vantra** (MeshCentral-derived RMM) — separate repo AND separate server. SpaceWorker
+- **Vantra** (MeshCentral-derived RMM) — separate repo, same VPS as of 2026-11-04
+  (`vantra.service`, `User=vantra`, `/opt/vantra`, `127.0.0.1:3300`). SpaceWorker
   talks to it over HTTP with a shared bearer (`VANTRA_INTERNAL_TOKEN`) via
-  `lib/vantra-link.ts`; `VANTRA_URL` resolves to `127.0.0.1:3300` on the VPS. Device
-  online/offline/idle telemetry comes from here. **Never assume SpaceWorker owns device
-  truth** — for online/idle it is a pass-through.
+  `lib/vantra-link.ts`. Device telemetry comes from Vantra, and Vantra's `online` flag
+  is **TRMM-agent-derived** (`listAgents` → `status`/`last_seen`). MeshCentral
+  (`wss://mesh.instaweb.top`) is only the remote-control transport and is **never**
+  consulted for online/offline. **Never assume SpaceWorker owns device truth** — for
+  online/idle it is a pass-through to TRMM.
 - **Windows EXE / Linux builds** — Tauri desktop product line, built by
   `.github/workflows/build-exe.yml`. Versioned and licensed separately.
 
@@ -69,6 +73,19 @@ deployed environment**, which is why §5's traps matter.
 | `screenshot-capture.service` | Headless Chromium that takes device screen captures |
 | `extraction-worker.service` | Python FastAPI worker, bound to `127.0.0.1:8001` |
 | `exit-node-us1/us2.service` | ProtonVPN WireGuard exit proxies for sending IP diversity |
+| `vantra.service` | Vantra RMM API, `User=vantra`, `127.0.0.1:3300` (added to this host 2026-11-04) |
+| `nats.service` | TRMM NATS server (`-c /rmm/api/tacticalrmm/nats-rmm.conf`, ports 4222/9235) |
+| `nats-api.service` | TRMM NATS API account — key must match Django `SECRET_KEY` |
+| `meshcentral` | `wss://mesh.instaweb.top` — remote-control transport only, NOT device status |
+| `coturn` | TURN for the private browser (UDP/TCP 3478, relay range) |
+
+**2026-11-04 rebuild note:** the production host moved to `207.244.224.57`. TacticalRMM
+lives at `/rmm/api/tacticalrmm` (venv `/rmm/api/env/bin/python`, `manage.py` there — not
+`/rmm/api/manage.py`). NATS credentials are generated from Django:
+`nats-rmm.conf` TRMM password = `SECRET_KEY`, `AGENTS` users = one per `agent_id` with
+that agent's `auth_token.key`; regenerate via `reload_nats()` only (after `django.setup()`).
+Never `source` `/opt/spaceworker/.env` or `/opt/vantra/.env`; read one value with
+`grep -m1 '^KEY=' file | cut -d= -f2-`.
 
 **Timers (each drives a paired `.service`):** `dispatcher` (10s, extraction queue) ·
 `mail-queue-drain` (60s, campaign sending) · `screenshot-sweep` (60s) ·
@@ -504,6 +521,62 @@ test that silently skips its setup tells you nothing; one that fails for the wro
 tells you something worse.
 
 ## 6. Current state — revise this block every session
+
+**T254 Android agent — 2026-11-09 (SOURCE-COMPLETE, build blocked → CI).**
+Branch `task-254-android-agent` off `main` `b363fa5`; vendored `rc-agent`
+(`ytruongdang/rc-agent` @ `fb88bd76f4d5b41e30d5cc0263bf49cb0787fdd9`) under
+`android-rc/`, app id `top.spaceworker.rcagent`. Owner priorities: BYOD
+install-and-run first, QR/Device-Owner unattended second; backend on
+`/opt/android-rc` on `207.244.224.57`. **Verified:** source for S1/S3–S13/S17/S18;
+`provision.sh` + `qr-payload.sh` pass `bash -n`; `git status` shows nothing outside
+`android-rc/` + docs. **Blocked:** S2/S14–S16 — host has no JDK/Android SDK/adb/
+Docker and only 3.2 GiB free, so the APK cannot be built locally. **Unblock:** new
+`.github/workflows/android-build.yml` builds debug + debug-signed release APK on
+GitHub runners; push the branch, download the `spaceworker-rc-apk` artifact, owner
+sideloads. **Senior fixes already applied:** stale R8 keep rule
+(`com.you.rcagent` → `top.spaceworker.rcagent`), `.gitignore` no longer hides
+`keystore.properties.example`, `qr-payload.sh` now encodes the full provisioning
+JSON (nested extras object + DER cert checksum), `AdminReceiver` parses the
+`rc_ws` port instead of assigning a URL to an Int, onboarding saves the enrollment
+code as the MQTT password and makes Accessibility the only blocking grant.
+**Risk:** upstream pins AGP 8.9.1 + Gradle 9.7.1; if CI rejects the pair, pin the
+wrapper to 8.11.1. Full runbook + per-task verification protocol:
+**`SENIOR_T254_ANDROID_VERIFICATION.md`**. Next: CI green → phone S15/S16 → T254-B
+(backend service).
+
+**Last verified: 2026-11-04 14:45 CET (Wilk online + remote origin + public Everwas).**
+New host **`207.244.224.57`** live; old `164.68.105.96` dead. `nats` + `nats-api` active;
+`spaceworker` + `vantra` active; `GET localhost:3500/` → 200. **Wilk
+(`WilkSF9`, agent `TpvHND…`) is ONLINE in the UI.** Mesh node is connected (`conn:1`)
+since 13:43:32 CET; TRMM agent service Running. Two blockers were fixed: (1) the org’s
+stale TRMM mapping — dedicated client **12** / site **58**, agent moved, org repointed
+(`trmmClientId=12`, `trmmSiteId=58`); (2) `nats-api` connected to Postgres as `sbgsdrhz`
+but the restored `agents_agent` had no grants (owner `smytivvn`), so every heartbeat
+logged `pq: permission denied for table agents_agent`. Fixed with
+`GRANT SELECT, UPDATE ON agents_agent TO sbgsdrhz;` + `systemctl restart nats-api`;
+heartbeat landed **14:14:09**, Vantra returned `online:true`, SpaceWorker row `online`,
+and the owner confirmed the UI. Re-check this grant after any `tacticalrmm` restore.
+`last_seen` had been seeded to the last confirmed contact (`2026-11-04 01:00:01 +01`) to
+avoid a 49-day display; the real heartbeat overwrote it. **SpaceWorker status is
+TRMM-derived** (`syncDevices` ← `listAgents` → `status`/`last_seen`); MeshCentral is
+remote control only. **Remote control:** `mesh.spaceworker.top` was missing its nginx
+vhost after the rebuild (default `broks.beauty` cert / 400). Restored a vhost proxying to
+`http://127.0.0.1:4430` with the `spaceworker.top` cert, and added
+`domains[""].allowedorigin = ["mesh.instaweb.top","mesh.spaceworker.top"]` to
+`/meshcentral/meshcentral-data/config.json`; the WebSocket now returns serverinfo/userinfo
+for `Origin: https://mesh.spaceworker.top` instead of `Invalid origin in HTTP request`.
+**Public Everwas agent:** installed on Wilk 2026-11-04 14:29 CET (`everwas-agent` Running,
+Automatic), so Wilk now has a public duplicate alongside the private TRMM device — safe.
+The public PS command generator now prints progress, requires an elevated PowerShell,
+checks the installer exit code, and logs to `%TEMP%\everwas-install.log`; a silent
+no-op means the command never executed. **WIN-T12VJK16MRU**: orphaned private Device row
+`cmvnr1j546s3qkp9bgeqhdsaj` soft-deleted 2026-11-04 04:56:56; `removeDevice` treats
+`vantra_404` as fall-through to local soft-delete (deployed). Unknown agent
+`GztDJIaAivMRDKEzJeeAOqsUNQgMAIkrSBTouamC` from `107.178.105.100` (IOFLOOD) spams NATS
+auth errors every ~5s — not ours; ignore. **Open:** CA exit node still dead (WG
+`10.2.0.2/32` conflict); `mainstreetmint.work` moved and premium custom hostnames
+unattached; deploy scripts still default to the old IP (override `VPS_HOST` and restore
+`/opt/spaceworker/static/maintenance.html`).
 
 **Last verified: 2026-10-09 (TASK_187 payment-alert email + support notifications +
 support invoice composer — INDEPENDENT VERIFIER PASS, `PROMPT_VERIFY_TASK_187.md`).**
@@ -1101,7 +1174,7 @@ npm run test:<relevant>                       # CI does not run these
 dropdb sw_mycheck                             # clean up
 ```
 
-**VPS (read-only):** `ssh -i ~/.ssh/tacticalrmm_vps root@164.68.105.96`, app at
+**VPS (read-only):** `ssh -i ~/.ssh/tacticalrmm_vps root@207.244.224.57`, app at
 `/opt/spaceworker`:
 
 ```bash
@@ -1221,6 +1294,34 @@ half-done. A half-done change with no note is worse than no change.
 | `app/AGENTS.md`, `app/CLAUDE.md` | Repo-local agent conventions |
 
 ## 12. Log
+
+### 2026-11-04 — Wilk online restored; Mesh origin fixed; public Everwas installed
+
+**Wilk online.** The last blocker was not NATS/Mesh: `nats-api` connected as
+`sbgsdrhz` but the restored `tacticalrmm.agents_agent` had no ACL (owner
+`smytivvn`), so every heartbeat failed with `pq: permission denied for table
+agents_agent`. `GRANT SELECT, UPDATE ON agents_agent TO sbgsdrhz;` +
+`systemctl restart nats-api` → heartbeat at 14:14:09 → Vantra `online:true` →
+SpaceWorker row `online`; owner confirmed the UI. Re-grant after any TRMM restore.
+
+**Remote control.** `mesh.spaceworker.top` resolved but had no nginx vhost, so
+it served the default `broks.beauty` cert and 400. Added the vhost (proxy to
+`127.0.0.1:4430`, `spaceworker.top` cert) and added
+`domains[""].allowedorigin = ["mesh.instaweb.top","mesh.spaceworker.top"]` to
+`/meshcentral/meshcentral-data/config.json`; without the latter the page loaded
+but the socket returned `Invalid origin in HTTP request`. Verified with a fresh
+login token: WebSocket from `Origin: https://mesh.spaceworker.top` returns
+`serverinfo`/`userinfo`; Wilk Mesh `conn:1`.
+
+**Public Everwas safety net.** The public command had never executed on Wilk (no
+service, no install dir, no temp exe). Ran the real command as SYSTEM: download
+9,905,152 bytes, installer exit 0, `everwas-agent` Running/Automatic; it now
+appears as a public device alongside the private TRMM device (safe duplicate).
+Updated the generator to print `Downloading…`/`Installing…`, require elevation,
+check the installer exit code, and log to `%TEMP%\everwas-install.log`; rebuilt
+and restarted SpaceWorker. Deploy wrapper needed the host key in `known_hosts`
+and the missing `/opt/spaceworker/static/maintenance.html` restored from
+`deploy/maintenance.html`.
 
 ### 2026-10-03 — ZONE-CREATE PROBE RAN: **NO**, tokens lack `zone.create` (answers §6.4 / triage §3.3)
 
@@ -2367,3 +2468,55 @@ four; do not claim live rendering.
   rewritten for TASK_177, section 7 row 0f queued ABOVE 0c grant per
   owner order. NOT the grant.
 
+
+### 2026-11-04 — VPS rebuild: new host, NATS auth restored, WIN orphan delete, Wilk status model
+
+- **Host moved to `207.244.224.57`; old `164.68.105.96` is dead.** All service
+  hostnames/DNS cut over. Live units verified: `spaceworker`, `vantra`, `nats`,
+  `nats-api` (all `active`); `GET http://localhost:3500/` → 200.
+- **NATS auth was the rebuild's outstanding breakage; fixed.** The regenerated
+  `nats-rmm.conf` had credentials that no longer matched Django, so every agent's
+  `/natsws` reconnect failed authentication. Regenerated through Django
+  (`django.setup()` → `tacticalrmm.utils.reload_nats()`): TRMM account password =
+  `SECRET_KEY` (80 chars), `AGENTS` = 4 per-agent users (username `agent_id`,
+  password `auth_token.key`); aligned `nats-api.conf` `key` to `SECRET_KEY`.
+  Verified from Django with `nats.connect(**setup_nats_options())` → `ok`;
+  `nats-api` restarted clean (`NRestarts=0`).
+- **`WIN-T12VJK16MRU` delete fixed end-to-end in code.** The orphaned private
+  Device row `cmvnr1j546s3qkp9bgeqhdsaj` (agent no longer in TRMM) was
+  soft-deleted (`removedAt` 2026-11-04 04:56:56). `lib/vantra-link.ts::removeDevice`
+  now treats a Vantra delete `404` as "agent already gone" and falls through to the
+  local soft-delete (`vantra_503` still maps to `agent_offline`). SpaceWorker rebuilt
+  as `trmm` (BUILD_ID mtime `2026-11-04 05:03:09`) and restarted. All three WIN rows
+  now have `removedAt`; `0` live.
+- **Wilk is offline because the laptop is asleep AND his org→TRMM mapping was stale.**
+  His Mesh node last connected 2026-11-04 01:16 CET; TRMM `/natsws` from
+  `71.227.11.85` ran ~every 5 s until 01:00:01 then stopped (Surface asleep; ICMP still
+  answers in Modern Standby). The bigger issue: the restored `tacticalrmm` DB is a
+  Sept-15 snapshot with clients ≤11, but his private org pointed at client 43 / site 144
+  — `listAgents(43)` was `[]`, so `syncDevices` wrote nothing. **Fixed:** created TRMM
+  client **12** / site **58**, moved agent `TpvHND…` to site 58 (`PUT /agents/<id>/
+  {site:58}`), repointed org `cmue394ot…` to `trmmClientId=12`/`trmmSiteId=58`; backups
+  in `/root/db-backups/*wilkfix-20261104-054851.dump`. **Chain proven by simulation:**
+  `last_seen=now()` → Vantra `online:true` → SpaceWorker Device row `online`; restoring
+  the stale timestamp → `offline`. The real heartbeat is written by the Go `nats-api`
+  service (`UPDATE agents_agent SET last_seen=$1, version=$2`), and Wilk's NATS AGENTS
+  user still matches his 40-char `authtoken_token.key`. Since the snapshot's Sept-15
+  value looked alarming (49 days), `last_seen` was seeded from the nginx log's last
+  confirmed contact, `2026-11-04 01:00:01 +01`, and the sweep wrote
+  `offline / lastSeenAt 2026-11-04 00:00:01` (~5h). That is a **seed, not a heartbeat**;
+  the first real heartbeat overwrites it, and the UI flips online on its own. Only the
+  real wake remains to be observed.
+- **Status model clarified and documented:** SpaceWorker `status` / `lastSeenAt` comes
+  **only** from TRMM (`syncDevices` ← Vantra `listAgents` → `a.status === "online"`,
+  `a.last_seen`); MeshCentral is remote control only. A machine that pings but shows
+  offline is asleep, not a Mesh problem.
+- **meshctrl access learned:** it accepts `--loginkey` (the hex `MESH_LOGIN_KEY` from
+  `/opt/vantra/.env`) — **not** `--token` or the key as `--loginpass`. `DeviceInfo`
+  confirms device facts; `RunCommand`/`DevicePower --wake` need a live agent.
+- **Unknown NATS noise:** agent id `GztDJIaAivMRDKEzJeeAOqsUNQgMAIkrSBTouamC` from
+  `107.178.105.100` (IOFLOOD) retries auth every ~5 s; absent from `agents_agent` and
+  `accounts_user`. Not ours — ignore/firewall.
+- **Docs updated:** `HOW_WE_MOVE_FAST.md` §0 (new IP), new §0a (new-server invariants,
+  NATS regeneration, TRMM-vs-Mesh status rule, meshctrl `--loginkey`, psql/env traps,
+  deploy-script warning), and a §6 gotcha entry.

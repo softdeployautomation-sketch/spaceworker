@@ -1,0 +1,73 @@
+name: Android APK (rc-agent)
+
+# T254 — build the vendored rc-agent APK on a GitHub runner.
+# The Mac host has no JDK/Android SDK/adb/Docker (and only ~3 GiB free), so CI
+# is the supported build path for Phase 1. Push to the T254 branch (or run
+# workflow_dispatch) and download the `spaceworker-rc-apk` artifact.
+#
+# Deploy is unaffected: this workflow only uploads an artifact; it never ships.
+
+on:
+  push:
+    branches: [task-254-android-agent]
+    paths:
+      - "android-rc/**"
+      - ".github/workflows/android-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build APK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android-rc
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK components
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('android-rc/**/*.gradle*', 'android-rc/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - name: Unit tests
+        run: ./gradlew --no-daemon --stacktrace testDebugUnitTest
+
+      - name: Debug keystore (Phase 1)
+        run: ./gradlew --no-daemon createDebugKeystore
+
+      - name: Assemble debug APK
+        run: ./gradlew --no-daemon --stacktrace assembleDebug
+
+      - name: Assemble release APK (debug-signed, Phase 1)
+        run: ./gradlew --no-daemon --stacktrace assembleRelease
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: spaceworker-rc-apk
+          if-no-files-found: error
+          path: |
+            android-rc/app/build/outputs/apk/debug/app-debug.apk
+            android-rc/app/build/outputs/apk/release/app-release.apk

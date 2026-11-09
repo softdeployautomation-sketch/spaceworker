@@ -1,0 +1,16 @@
+RC Agent — open-source remote screen control for Android devices, integrated with Headwind MDM
+Copyright 2026 Y Truong
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes third-party software:
+
+  - OkHttp (Square, Inc.) — Apache-2.0
+  - Eclipse Paho MQTT v5 Java Client (Eclipse Foundation) — EPL-2.0 / EDL-1.0
+  - SLF4J (QOS.ch) — MIT
+  - stream-webrtc-android (Stream.io, repackaging the WebRTC project) — BSD-3-Clause
+  - AndroidX Core KTX (The Android Open Source Project) — Apache-2.0
+
+The Samsung Knox SDK is NOT included or redistributed. Knox support is
+reflection-only and compiles against an optional, locally supplied
+`app/libs/knoxsdk.jar` that is never committed to this repository.

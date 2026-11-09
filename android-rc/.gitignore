@@ -1,0 +1,31 @@
+# Gradle / build
+.gradle/
+.kotlin/
+**/build/
+local.properties
+.cxx/
+
+# IDE
+*.iml
+.idea/
+captures/
+
+# OS
+.DS_Store
+
+# Artifacts
+*.apk
+*.aab
+
+# Signing — never commit secrets. assembleRelease fails without these, by design.
+keystore/*.jks
+keystore/*.keystore
+keystore/*.p12
+keystore/keystore.properties
+!keystore/keystore.properties.example
+
+# Samsung Knox SDK: compileOnly, supplied locally, not redistributable
+app/libs/knoxsdk.jar
+
+# Agent scratch
+.claude/

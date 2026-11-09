@@ -1,0 +1,31 @@
+version: 2
+updates:
+  - package-ecosystem: gradle
+    directory: "/"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    # One PR for the routine bumps; majors still arrive on their own, because
+    # on this project a major is usually a toolchain migration, not an upgrade.
+    groups:
+      gradle-minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      # These want compileSdk 37 / AGP 9.1, and we are on compileSdk 36 / AGP 8.9.
+      # They are not routine bumps but the same single migration, so they are held
+      # until that migration happens rather than reopened every month.
+      - dependency-name: "androidx.core:core-ktx"
+        versions: [">=1.19.0"]
+      - dependency-name: "com.squareup.okhttp3:okhttp"
+        versions: [">=5.0.0"]
+      # AGP 9 drops the standalone Kotlin plugin, so it is a build-file change
+      # rather than a bump and Dependabot cannot land it. Tracked in #13.
+      - dependency-name: "com.android.application"
+        versions: [">=9.0.0"]
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]

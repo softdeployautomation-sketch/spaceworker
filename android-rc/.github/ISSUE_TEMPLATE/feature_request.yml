@@ -1,0 +1,23 @@
+name: Feature request
+description: Suggest a change
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What goes wrong today, on a real fleet? Start here, not with the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+    validations:
+      required: true
+  - type: checkboxes
+    id: contract
+    attributes:
+      label: Wire protocol
+      options:
+        - label: This changes the 9-byte framing, an MQTT payload, or the WebSocket handshake — and therefore needs a matching server change.

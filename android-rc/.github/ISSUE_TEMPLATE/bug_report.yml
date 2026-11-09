@@ -1,0 +1,63 @@
+name: Bug report
+description: Something is broken on a device
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not paste MQTT passwords, session tokens or relay hostnames.
+        For a security issue, use **Security → Report a vulnerability** instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Agent version
+      description: versionName, e.g. 1.4.5 — shown on the settings dump and in every MQTT state payload.
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device and Android version
+      placeholder: Samsung Galaxy Tab A9+ / Android 14
+    validations:
+      required: true
+  - type: dropdown
+    id: path
+    attributes:
+      label: Capture path in use
+      options:
+        - WebRTC hardware H.264
+        - MediaProjection JPEG
+        - Accessibility screenshot JPEG
+        - Unknown
+    validations:
+      required: true
+  - type: dropdown
+    id: network
+    attributes:
+      label: Network
+      description: Config.wan silently changes resolution, bitrate, fps and congestion thresholds.
+      options:
+        - WAN (public relay host)
+        - LAN (private relay host)
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: "`adb logcat -s RC:V`, and any RC_FAIL code such as H264_INIT or PROJECTION_DENIED."
+      render: text

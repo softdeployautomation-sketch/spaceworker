@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Adaptive-icon foreground: transparent, ink inside the 66dp safe circle so round
+  masks never clip the Wi-Fi arc. Vector, not PNG — a 432px bitmap in res/drawable
+  decodes at 4x on xxxhdpi.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- screen -->
+    <path
+        android:pathData="M32.72,44.7 H67.29 A2.8,2.8 0 0 1 70.09,47.5 V69.39 A2.8,2.8 0 0 1 67.29,72.19 H32.72 A2.8,2.8 0 0 1 29.92,69.39 V47.5 A2.8,2.8 0 0 1 32.72,44.7 Z"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2"
+        android:strokeLineJoin="round"/>
+
+    <!-- play -->
+    <path
+        android:pathData="M44.6,51.9 L55.9,58.45 L44.6,65.0 Z"
+        android:fillColor="#00B1AF"
+        android:strokeColor="#00B1AF"
+        android:strokeWidth="2"
+        android:strokeLineJoin="round"/>
+
+    <!-- signal -->
+    <path
+        android:pathData="M77.98,46.16 A9.67,9.67 0 0 0 65.67,36.18"
+        android:strokeColor="#00B1AF"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"/>
+    <path
+        android:pathData="M74.01,45.88 A5.69,5.69 0 0 0 66.76,40.01"
+        android:strokeColor="#00B1AF"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"/>
+</vector>
