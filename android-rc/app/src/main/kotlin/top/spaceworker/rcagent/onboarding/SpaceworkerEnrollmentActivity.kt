@@ -107,6 +107,9 @@ class SpaceworkerEnrollmentActivity : Activity() {
             addView(col)
         })
         serverInput.setText(BuildConfig.RC_SERVER)
+        if (BuildConfig.FLEET_ENROLL_CODE.isNotBlank()) {
+            enrollInput.setText(BuildConfig.FLEET_ENROLL_CODE)
+        }
         refresh()
     }
 

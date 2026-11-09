@@ -218,11 +218,7 @@ function parseFrame(data) {
   const payload = data.slice(FRAME_HEADER_SIZE);
   return { type, pts: Number(pts), payload };
 }
-const API_BASE = (() => {
-  const h = window.location.hostname;
-  const p = window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
-  return `http://${h}:${p === '80' || p === '443' ? 8090 : p}`;
-})();
+const API_BASE = window.location.origin;
 
 const FRAME_HEADER_SIZE = 9;
 const TYPE_CONFIG = 0x01;
