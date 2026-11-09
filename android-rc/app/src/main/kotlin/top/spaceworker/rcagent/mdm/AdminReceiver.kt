@@ -1,6 +1,7 @@
 package top.spaceworker.rcagent.mdm
 
 import android.app.admin.DeviceAdminReceiver
+import android.app.admin.DevicePolicyManager
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
@@ -21,7 +22,7 @@ class AdminReceiver : DeviceAdminReceiver() {
         super.onEnabled(context, intent)
         Log.i(Config.TAG, "AdminReceiver onEnabled")
         val extras = intent.getParcelableExtra<Bundle>(
-            DeviceAdminReceiver.EXTRA_PROVISIONING_ADMIN_EXTRAS_BUNDLE,
+            DevicePolicyManager.EXTRA_PROVISIONING_ADMIN_EXTRAS_BUNDLE,
         )
         val applied = extras?.let { b ->
             val raw = mutableMapOf<String, String>()
@@ -34,7 +35,7 @@ class AdminReceiver : DeviceAdminReceiver() {
                 }
                 if (v != null && v.isNotBlank()) raw[k] = v
             }
-            Map(raw)
+            raw.toMap()
         } ?: emptyMap()
         applyExtras(context, applied)
         MqttClient.connectNow()
@@ -45,16 +46,16 @@ class AdminReceiver : DeviceAdminReceiver() {
         Log.w(Config.TAG, "AdminReceiver onDisabled — device no longer managed")
     }
 
-    override fun onDisableRequested(context: Context, intent: Intent): Boolean {
+    override fun onDisableRequested(context: Context, intent: Intent): CharSequence? {
         Log.w(Config.TAG, "AdminReceiver onDisableRequested")
-        return true // allow disable (policy decision; fleet may return false to lock)
+        return null // allow disable (policy decision; fleet may return a warning to lock)
     }
 
     override fun onProfileProvisioningComplete(context: Context, intent: Intent) {
         super.onProfileProvisioningComplete(context, intent)
         Log.i(Config.TAG, "AdminReceiver onProfileProvisioningComplete")
         val extras = intent.getParcelableExtra<Bundle>(
-            DeviceAdminReceiver.EXTRA_PROVISIONING_ADMIN_EXTRAS_BUNDLE,
+            DevicePolicyManager.EXTRA_PROVISIONING_ADMIN_EXTRAS_BUNDLE,
         )
         val applied = extras?.let { b ->
             val raw = mutableMapOf<String, String>()
@@ -67,7 +68,7 @@ class AdminReceiver : DeviceAdminReceiver() {
                 }
                 if (v != null && v.isNotBlank()) raw[k] = v
             }
-            Map(raw)
+            raw.toMap()
         } ?: emptyMap()
         applyExtras(context, applied)
         MqttClient.connectNow()

@@ -84,8 +84,8 @@ object SessionBus {
         FaultLog.step("session.start")
         SessionDiag.emit("session.start")
         // Default capture = Accessibility takeScreenshot (JPEG, NO MediaProjection prompt).
-        // MediaProjection/H.264 only behind the settings toggle (Config.mediaProjectionEnabled).
-        if (Config.mediaProjectionEnabled(ctx)) {
+        // MediaProjection/H.264 only behind the settings toggle (BackendPrefs.mediaProjectionEnabled).
+        if (BackendPrefs.mediaProjectionEnabled(ctx)) {
             Log.i(Config.TAG, "session.start media projection")
             FaultLog.step("mp:request")
             requestProjection(ctx)

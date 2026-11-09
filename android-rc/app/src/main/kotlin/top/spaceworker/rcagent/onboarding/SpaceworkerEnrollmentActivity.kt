@@ -18,6 +18,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.app.NotificationManagerCompat
+import top.spaceworker.rcagent.BuildConfig
 import top.spaceworker.rcagent.R
 import top.spaceworker.rcagent.core.BackendPrefs
 import top.spaceworker.rcagent.core.Config
@@ -49,13 +50,13 @@ class SpaceworkerEnrollmentActivity : Activity() {
             setBackgroundColor(0xFF121212.toInt())
             setPadding(24, 48, 24, 24)
             gravity = Gravity.TOP
-            addView(TextView(this).apply {
+            addView(TextView(this@SpaceworkerEnrollmentActivity).apply {
                 text = getString(R.string.app_name)
                 textSize = 22f
                 setTextColor(-1)
                 setPadding(0, 0, 0, 16)
             })
-            addView(TextView(this).apply {
+            addView(TextView(this@SpaceworkerEnrollmentActivity).apply {
                 text = "Set up remote control"
                 textSize = 16f
                 setTextColor(0xFFB0B0B0.toInt())
@@ -66,7 +67,7 @@ class SpaceworkerEnrollmentActivity : Activity() {
             addView(serverInput)
             addView(enrollInput)
             addView(btn("Scan QR code") { scanQr() })
-            addView(TextView(this).apply {
+            addView(TextView(this@SpaceworkerEnrollmentActivity).apply {
                 text = "Required grants"
                 textSize = 16f
                 setTextColor(0xFFB0B0B0.toInt())
@@ -85,13 +86,13 @@ class SpaceworkerEnrollmentActivity : Activity() {
                 getString(R.string.enroll_row_overlay), R.string.open_overlay,
                 { openOverlaySettings() }, { Settings.canDrawOverlays(this@SpaceworkerEnrollmentActivity) })
             for ((_, row) in rows) addView(row.view)
-            status = TextView(this).apply {
+            status = TextView(this@SpaceworkerEnrollmentActivity).apply {
                 setTextColor(0xFFB0B0B0.toInt())
                 textSize = 13f
                 setPadding(0, 8, 0, 4)
             }
             addView(status)
-            ready = TextView(this).apply {
+            ready = TextView(this@SpaceworkerEnrollmentActivity).apply {
                 setTextColor(0xFF00C853.toInt())
                 textSize = 18f
                 setPadding(0, 12, 0, 4)
@@ -138,7 +139,7 @@ class SpaceworkerEnrollmentActivity : Activity() {
         val optionalMissing = mutableListOf<String>()
         for ((key, row) in rows) {
             val granted = row.granted()
-            row.view.setGranted(granted)
+            row.setGranted(granted)
             if (key == "accessibility") {
                 if (!granted) requiredGreen = false
             } else if (!granted) {
@@ -260,7 +261,7 @@ class SpaceworkerEnrollmentActivity : Activity() {
         desc: String,
         openBtnRes: Int,
         open: () -> Unit,
-        private val granted: () -> Boolean,
+        private val check: () -> Boolean,
     ) {
         val view: LinearLayout = LinearLayout(this@SpaceworkerEnrollmentActivity).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -276,12 +277,12 @@ class SpaceworkerEnrollmentActivity : Activity() {
         }
 
         fun setGranted(ok: Boolean) {
-            val tv = getChildAt(0) as TextView
+            val tv = view.getChildAt(0) as TextView
             tv.setTextColor(if (ok) 0xFF00C853 else -1)
-            (getChildAt(1) as Button).isEnabled = !ok
+            (view.getChildAt(1) as Button).isEnabled = !ok
         }
 
-        fun granted(): Boolean = granted()
+        fun granted(): Boolean = check()
     }
 
     companion object {

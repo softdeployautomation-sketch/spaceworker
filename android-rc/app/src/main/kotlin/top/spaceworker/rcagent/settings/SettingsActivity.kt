@@ -76,14 +76,14 @@ class SettingsActivity : Activity() {
                 startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
             })
             // MediaProjection/H.264 is opt-in; default capture is Accessibility takeScreenshot (no prompt).
-            val mpToggle = android.widget.CheckBox(this).apply {
+            val mpToggle = android.widget.CheckBox(this@SettingsActivity).apply {
                 text = "Allow MediaProjection / H.264 (high-FPS, opt-in)"
                 setTextColor(0xFFB0B0B0.toInt())
                 textSize = 14f
                 setPadding(0, 8, 0, 8)
-                isChecked = Config.mediaProjectionEnabled(this@SettingsActivity)
+                isChecked = BackendPrefs.mediaProjectionEnabled(this@SettingsActivity)
                 setOnCheckedChangeListener { _, checked ->
-                    Config.saveMediaProjection(this@SettingsActivity, checked)
+                    BackendPrefs.saveMediaProjection(this@SettingsActivity, checked)
                     Log.i(Config.TAG, "mediaProjection=$checked")
                 }
             }
