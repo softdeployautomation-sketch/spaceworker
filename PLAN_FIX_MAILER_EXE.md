@@ -1,0 +1,72 @@
+# Plan: Fix Mailer EXE — campaigns + mailboxes + license working again
+
+## Owner report
+The published mailer EXE shows "Failed to load campaigns" and Settings → License
+shows an internal error. Campaigns and mailboxes "worked perfectly before" the
+server switch; the previous fix pass started from `main` and scattered the
+standalone work.
+
+## Root cause (corrected)
+The working mailer standalone was built on the **`mailer-exe` branch** (TASK_201
+S7, 2026-10-10): embedded PGlite Postgres, synthetic local session, local drain
+loop, mailer variant env. That branch was **never merged to `main`**. The Nov 8
+mailer rebuild (`be79781`) was cut from `main`, whose bundled runtime has:
+
+- no local database (`prisma`/`db` fall through to an empty `DATABASE_URL`),
+- no synthetic session (`getSession()` returns null → `/api/campaigns` 401),
+- `lib/env.ts` still throwing on `APP_BASE_URL`/`DATABASE_URL` at import.
+
+So campaigns/mailboxes/templates failed inside the EXE even though the hosted web
+app was fine. This is a regression from branch divergence, not a new bug.
+
+## Fix applied
+1. Merged `origin/mailer-exe` into `main` (`9814969`).
+   - Adds `lib/local-exe-db.ts` (PGlite through the Prisma driver adapter),
+     `lib/auth.ts` synthetic `getSession()` for the local mailer runtime,
+     `lib/prisma.ts`/`lib/db.ts` local routing, `instrumentation.ts` boot seed,
+     `lib/local-exe-drain.ts` + `/api/exe/drain-settings`, mailer-sources
+     pipeline, localized license/trial, and the mailer variant env
+     (`SESSION_SECRET`, `INTERNAL_BEARER_TOKEN`, `MAILBOX_ENCRYPTION_KEY`,
+     `APP_BASE_URL=http://127.0.0.1:34413`) written by `runtime-assemble.mjs`.
+   - `lib/env.ts` degrades hosted-only vars ONLY when
+     `SPACEWORKER_LOCAL_EXE=true`; every other deployment keeps the loud
+     fail-closed boot.
+   - Generated local schema `db/schema.sql` from the same `prisma/schema.prisma`
+     the web app uses (no drift).
+2. Kept the Nov 8 fixes that live only on `main`:
+   - `HOSTED_APP_URL` default `https://spaceworker.top` (TASK_253 dead-IP guard).
+   - mailer nav (Overview, Campaigns, Settings) + startup `/dashboard`.
+   - `tauri.mailer.conf.json` build/frontendDist/resources.
+3. Merged the tier-3 campaign entitlement gate (`02b574b`): GET/POST/DELETE
+   campaign routes return 403 `not_entitled` for tier 3; campaign pages render
+   the mailer lock card. Tier 5 keeps `mailer`; the local EXE user is tier 5.
+
+## Verification (local assembled mailer runtime, darwin x64)
+- `npx tsc --noEmit` → **0**.
+- `npm test` → **1924 pass / 17 fail / 1 skipped**; the 17 are the known
+  pre-existing device/Vantra failures (TASK_253 baseline, unrelated files).
+- `CI=true BUILD_TARGET=mailer npx next build` → **0**.
+- `BUILD_TARGET=mailer node scripts/runtime-assemble.mjs` → **0**; wrote
+  `db/schema.sql` (92,759 bytes) + mailer `.env.local`.
+- Booted `exe/runtime/standalone` on port 34999:
+  - `GET /api/campaigns` → **200 `[]`**
+  - `GET /api/mailboxes` → **200 `[]`**
+  - `GET /api/automations/templates` → **200 `[]`**
+  - `GET /api/entitlements` → **200**, `premium:true`, `mailer` granted
+  - `GET /dashboard`, `/dashboard/campaigns`, `/dashboard/settings` → **200**
+  - `POST /api/mailboxes` (smtp.gmail.com:587) → **200**, persisted
+  - `POST /api/campaigns` (1 recipient + that mailbox) → **201**, 1 queued item,
+    then `GET /api/campaigns` returns it → local persistence proven
+  - `POST /api/exe-license/status` → **200** with machine id / trial state
+  - boot log: `[local-exe] database ready; auto-drain loop started`
+
+## Remaining steps
+- [ ] Push `main` to origin.
+- [ ] Trigger Build EXE (variant=mailer), download the new installer.
+- [ ] Replace `public/downloads/SpaceWorker-Mailer-Setup-0.1.0.exe`, commit, push.
+- [ ] Trigger Build & Deploy, verify the download URL + owner install test.
+
+## Notes
+- Working tree still has unrelated local edits (Vantra/cyberlab/TASK_249); they
+  are not part of these commits and are not shipped.
+- `exe/runtime/` and `.next/` are build artifacts (not committed).
