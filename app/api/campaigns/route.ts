@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { hasEntitlement } from "@/lib/entitlements";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
 import { parseRecipientsCsv } from "@/lib/csv";
@@ -17,6 +18,16 @@ export async function GET() {
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+  // Tier 3 (XDevice) is devices-only: the `mailer` key stays denied for it, so
+  // tier-3 users cannot list or create campaigns (see tests/xdevice-tier.test.ts
+  // scope-creep rule). Premium tier 5 keeps `mailer` via the catch-all.
+  const decision = await hasEntitlement(session.userId, "mailer");
+  if (!decision.allowed) {
+    return NextResponse.json(
+      { error: "Campaigns aren't included on your account yet.", code: "not_entitled" },
+      { status: 403 },
+    );
+  }
 
   const campaigns = await prisma.emailCampaign.findMany({
     where: { userId: session.userId },
@@ -34,6 +45,13 @@ export async function POST(req: Request) {
   const session = await getSession();
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const decision = await hasEntitlement(session.userId, "mailer");
+  if (!decision.allowed) {
+    return NextResponse.json(
+      { error: "Campaigns aren't included on your account yet.", code: "not_entitled" },
+      { status: 403 },
+    );
   }
 
   let body: {

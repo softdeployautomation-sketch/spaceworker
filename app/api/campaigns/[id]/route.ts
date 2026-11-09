@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { hasEntitlement } from "@/lib/entitlements";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
 
@@ -9,6 +10,13 @@ export async function GET(
   const session = await getSession();
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const decision = await hasEntitlement(session.userId, "mailer");
+  if (!decision.allowed) {
+    return NextResponse.json(
+      { error: "Campaigns aren't included on your account yet.", code: "not_entitled" },
+      { status: 403 },
+    );
   }
   const { id } = await params; // MUST await — async in Next.js 16
 
@@ -56,6 +64,13 @@ export async function PATCH(
   const session = await getSession();
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const decision = await hasEntitlement(session.userId, "mailer");
+  if (!decision.allowed) {
+    return NextResponse.json(
+      { error: "Campaigns aren't included on your account yet.", code: "not_entitled" },
+      { status: 403 },
+    );
   }
   const { id } = await params;
 
@@ -116,6 +131,13 @@ export async function DELETE(
   const session = await getSession();
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const decision = await hasEntitlement(session.userId, "mailer");
+  if (!decision.allowed) {
+    return NextResponse.json(
+      { error: "Campaigns aren't included on your account yet.", code: "not_entitled" },
+      { status: 403 },
+    );
   }
   const { id } = await params;
 

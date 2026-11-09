@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
 import MailboxesPanel from "@/components/mailboxes-panel";
 import { SendingDomainsPanel } from "@/components/sending-domains-panel";
+import { ModuleToolLockCard, useModuleLock } from "@/components/module-tool-lock";
 import { useConfirm } from "@/components/confirm-provider";
 // Task 30, item 1 — renderMerge is a pure string->string function with no
 // server-only dependencies, so it's safe to import into this client component to
@@ -286,6 +287,12 @@ function CampaignsPageInner() {
   const [pickerInclude, setPickerInclude] = useState("");
   const [pickerExclude, setPickerExclude] = useState("");
   const [selectedLeadIds, setSelectedLeadIds] = useState<string[]>([]);
+
+  // Tier 3 (XDevice) surfaces only `devices` — `mailer` stays denied, so a
+  // tier-3 account never sees the campaign create surface. The server routes
+  // are the authority (403); this lock card is UX that never flashes over an
+  // entitled account.
+  const { locked: mailerLocked } = useModuleLock("mailer");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -845,7 +852,11 @@ function CampaignsPageInner() {
 
   return (
     <div className="flex flex-col gap-6 p-6">
-      {/* Task 26, Piece 6 — page-level segment switcher. The Mailboxes management
+      {mailerLocked ? (
+        <ModuleToolLockCard moduleKey="mailer" />
+      ) : (
+        <>
+          {/* Task 26, Piece 6 — page-level segment switcher. The Mailboxes management
           UI was relocated here from its own /dashboard/mailboxes route and is
           rendered intact via <MailboxesPanel /> when that tab is active. */}
       <div className="mt-1 inline-flex rounded-lg bg-zinc-100 p-1 dark:bg-zinc-900">
@@ -1728,6 +1739,8 @@ function CampaignsPageInner() {
           </div>
         </div>,
         document.body,
+      )}
+        </>
       )}
         </>
       )}

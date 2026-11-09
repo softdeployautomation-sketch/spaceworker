@@ -4,6 +4,7 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 
 import { Modal } from "@/components/modal";
+import { ModuleToolLockCard, useModuleLock } from "@/components/module-tool-lock";
 // Task 30, item 1 — renderMerge is pure (no server-only deps), so previewing a
 // queued item's EXACT resolvedSubject/resolvedBodyHtml with its own variables is
 // safe to do right here client-side.
@@ -310,6 +311,12 @@ export default function CampaignDetailPage() {
   const [mailboxPreviewBusyId, setMailboxPreviewBusyId] = useState<string | null>(null);
   const [mailboxApplyBusy, setMailboxApplyBusy] = useState(false);
   const [mailboxError, setMailboxError] = useState("");
+
+  // Tier 3 (XDevice) surfaces only `devices` — `mailer` stays denied, so a
+  // tier-3 account never sees a campaign's detail surface. The server routes
+  // are the authority (403); this lock card is UX that never flashes over an
+  // entitled account.
+  const { locked: mailerLocked } = useModuleLock("mailer");
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -1840,9 +1847,13 @@ export default function CampaignDetailPage() {
 
   return (
     <div>
-      <Link href="/dashboard/campaigns" className="text-sm font-medium text-zinc-500 underline-offset-4 hover:underline dark:text-zinc-400">
-        ← Back to campaigns
-      </Link>
+      {mailerLocked ? (
+        <ModuleToolLockCard moduleKey="mailer" />
+      ) : (
+        <>
+          <Link href="/dashboard/campaigns" className="text-sm font-medium text-zinc-500 underline-offset-4 hover:underline dark:text-zinc-400">
+            ← Back to campaigns
+          </Link>
 
       <div className="mt-4 flex flex-wrap items-center gap-3">
         <h1 className="text-2xl font-semibold tracking-tight">{campaign.name}</h1>
@@ -2699,6 +2710,8 @@ export default function CampaignDetailPage() {
           </Modal>
         );
       })()}
+        </>
+      )}
     </div>
   );
 }

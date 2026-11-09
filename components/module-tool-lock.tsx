@@ -26,7 +26,7 @@ import { UPGRADE_TO_PREMIUM_PLUS } from "@/lib/plan-name";
 // misleading on an account that is already Premium Plus, so Cyber Lab asks with its
 // own template: an extension users bolt onto whatever plan they have (free included).
 
-export type ModuleLockKey = "extractor" | "cyberlab" | "hosting" | "browser";
+export type ModuleLockKey = "extractor" | "mailer" | "cyberlab" | "hosting" | "browser";
 
 interface EntitlementAnswer {
   /** `null` until the endpoint answers, and stays `null` on failure (default-open). */
@@ -92,6 +92,14 @@ const MODULE_LOCK_COPY: Record<ModuleLockKey, LockCopy> = {
       "Search the web, verify and export structured lead lists — extraction runs on our servers.",
       "Every job, lead list and export you already have stays readable and exportable.",
       "This tab stays open so you can see exactly what the tool does.",
+    ],
+  },
+  mailer: {
+    title: "Campaigns is a premium tool",
+    bullets: [
+      "Send outreach campaigns, rotate subjects and bodies, and track delivery across your mailboxes.",
+      "Your existing campaigns and send history stay readable — creating new ones is what's premium.",
+      "This tab stays open so you can see exactly what campaigns does.",
     ],
   },
   cyberlab: {
