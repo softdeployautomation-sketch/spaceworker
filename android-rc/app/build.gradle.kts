@@ -42,7 +42,7 @@ android {
         buildConfigField("String", "MQTT_BROKER", "\"${rcProp("RC_MQTT_BROKER", "ssl://android.spaceworker.top:8883")}\"")
         buildConfigField("String", "WS_BASE", "\"${rcProp("RC_WS_BASE", "wss://android.spaceworker.top")}\"")
         buildConfigField("String", "RC_SERVER", "\"${rcProp("RC_SERVER", "https://android.spaceworker.top")}\"")
-        buildConfigField("String", "FLEET_ENROLL_CODE", "\"\${rcProp("RC_FLEET_ENROLL_CODE", "bdedd20e001dea529e10f47326ffcc8ebd7688f4ef8099263600ebe093eb0736")}\"")
+        buildConfigField("String", "FLEET_ENROLL_CODE", "\"${rcProp("FLEET_ENROLL_CODE", "bdedd20e001dea529e10f47326ffcc8ebd7688f4ef8099263600ebe093eb0736")}\"")
         buildConfigField("String", "DEVICE_ID", "\"${rcProp("RC_DEVICE_ID", "")}\"")
         // Rỗng = phải do MDM đẩy xuống. Không bao giờ commit mật khẩu thật.
         buildConfigField("String", "MQTT_PASSWORD", "\"${rcProp("RC_MQTT_PASSWORD", "")}\"")
