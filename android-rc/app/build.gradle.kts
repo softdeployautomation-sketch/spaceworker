@@ -51,7 +51,9 @@ android {
     signingConfigs {
         // Phase 1: release signed with the debug keystore so `assembleRelease`
         // works without a fleet key (generate via createDebugKeystore task).
-        create("debug") {
+        // AGP already registers a `debug` SigningConfig; configure it instead of
+        // creating a duplicate (create("debug") throws "already exists").
+        getByName("debug") {
             storeFile = debugKs
             storeType = "JKS"
             storePassword = ksProp("DEBUG_STORE_PASSWORD", "android")
