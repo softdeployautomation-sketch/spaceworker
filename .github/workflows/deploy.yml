@@ -243,7 +243,7 @@ jobs:
         run: node scripts/engine-dist.mjs
 
       - name: Package build artifact
-        run: tar czf /tmp/deploy.tar.gz .next node_modules package.json package-lock.json prisma browser-server worker deploy browser-capture engine-dist public
+        run: tar czf /tmp/deploy.tar.gz .next node_modules package.json package-lock.json prisma browser-server worker deploy browser-capture engine-dist public deploy/nginx-spaceworker.conf
 
       - name: Set up SSH
         run: |
@@ -332,6 +332,9 @@ jobs:
             tar xzf /tmp/spaceworker-ci-deploy.tar.gz -C /opt/spaceworker
             chown -R trmm:trmm /opt/spaceworker
             rm -f /tmp/spaceworker-ci-deploy.tar.gz
+            # Sync nginx vhost so /downloads/ serves EXEs directly from public/
+            cp deploy/nginx-spaceworker.conf /etc/nginx/sites-available/spaceworker.top
+            nginx -t && systemctl reload nginx
             npm rebuild || true
             # Recover from a previously FAILED migration: Prisma blocks all new
             # migrations when one is stuck in "failed" state. Mark it rolled-back
