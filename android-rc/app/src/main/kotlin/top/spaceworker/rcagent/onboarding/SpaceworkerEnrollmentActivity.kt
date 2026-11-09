@@ -278,7 +278,7 @@ class SpaceworkerEnrollmentActivity : Activity() {
 
         fun setGranted(ok: Boolean) {
             val tv = view.getChildAt(0) as TextView
-            tv.setTextColor(if (ok) 0xFF00C853 else -1)
+            tv.setTextColor(if (ok) 0xFF00C853.toInt() else -1)
             (view.getChildAt(1) as Button).isEnabled = !ok
         }
 
