@@ -48,14 +48,25 @@ re-deriving anything. Update this file in place at the end of every T254 session
 | S11 provision.sh | PASS (`bash -n`) | `android-rc/provision.sh` |
 | S12 qr-payload.sh | PASS (`bash -n`; rewritten) | `android-rc/qr-payload.sh` |
 | S13 README | PASS | `android-rc/README_T254A.md` |
-| S14 signed APK | **BLOCKED → CI** | host has no JDK/SDK/adb/Docker; 3.2 GiB free |
-| S15 install + logcat | **BLOCKED → phone** | no adb/phone on host |
+| S2 reproducible build | **PASS (CI)** | run `42585417527` green: unit tests + debug + release |
+| S14 signed APK | **PASS (CI)** | `app-debug.apk` 14 MB, `app-release.apk` 12 MB; v2/v3 signing block present; arm64-v8a |
+| S15 install + logcat | **BLOCKED → phone** | no adb/phone on host; owner sideload pending |
 | S16 BYOD "Ready" render | **BLOCKED → phone** | same |
 | S17 MediaProjection not default | PASS | grep: only `SessionBus.kt:88` gated path |
 | S18 no Spaceworker app/lib/prisma changes | PASS | `git status` changes only under `android-rc/` + docs |
 
-**Verdict:** T254-A is **source-complete, not gate-verified**. Do not mark S2/S14–S16
-done until CI produces an APK and it installs on the phone.
+**Verdict:** T254-A is **built and signed**. Only the on-phone gates (S15/S16) remain,
+and they need the owner to sideload `app-debug.apk` — the host has no adb/phone.
+
+Build evidence:
+- Workflow run `42585417527` (`android-build.yml`, `task-254-android-agent` @ `10177ad`).
+- Artifact `spaceworker-rc-apk` id `13658214382`, 15,526,784 bytes.
+- `app-debug.apk` sha256 `e3d66ce534571df8e107f7cb18ac63139ffc64d4ff9ebbe2510ed856daec8970`
+- `app-release.apk` sha256 `240b678591854c9da5866e28b253b3bbb9ac0630857702536bfa03fece296504`
+- Manifest verified (UTF-16 string pool): package `top.spaceworker.rcagent`,
+  `SpaceworkerEnrollmentActivity`, `MaintenanceOverlayService`, `AdminReceiver`,
+  `BIND_ACCESSIBILITY_SERVICE` all present. versionName `1.0.0-t254a`, versionCode 1,
+  minSdk 26 / targetSdk 35. Native ABI: **arm64-v8a only** (by design, `abiFilters`).
 
 ---
 
@@ -78,23 +89,49 @@ wrapper to 8.11.1 (or bump AGP) and record it here.
 release requires `fleet.jks`; the vendored build allows a debug-signed release for
 Phase 1. Update CLAUDE.md when the fleet key lands.
 
+### 3.1 CI build fixes (2026-11-09, senior)
+
+The first real compile on CI surfaced defects that local review could not catch
+(no JDK/SDK on host). All fixed:
+
+| # | File | Defect | Fix |
+|---|---|---|---|
+| 6 | `.github/workflows/android-build.yml` | wrapper download 504s + cache-key churn on every `build.gradle.kts` edit | replaced `actions/cache` + `./gradlew` with `gradle/actions/setup-gradle@v4` (`gradle-version: 8.11.1`) and `gradle` commands |
+| 7 | `core/SessionBus.kt:88`, `settings/SettingsActivity.kt:84-86` | `Config.mediaProjectionEnabled` / `Config.saveMediaProjection` unresolved — functions live in `BackendPrefs` | call `BackendPrefs.*` (same package in `SessionBus`; imported in `SettingsActivity`) |
+| 8 | `mdm/AdminReceiver.kt` | `DeviceAdminReceiver.EXTRA_PROVISIONING_ADMIN_EXTRAS_BUNDLE` does not exist | `DevicePolicyManager.EXTRA_PROVISIONING_ADMIN_EXTRAS_BUNDLE` |
+| 9 | `mdm/AdminReceiver.kt:38,71` | `Map(raw)` — `Map` is an interface, no constructor | `raw.toMap()` |
+| 10 | `mdm/AdminReceiver.kt:49` | `onDisableRequested` returned `Boolean`; base class returns `CharSequence?` | return `CharSequence?` (`null` = allow disable) |
+| 11 | `onboarding/SpaceworkerEnrollmentActivity.kt:52,58,69,88,94` | `TextView(this)` inside `LinearLayout(this).apply { }` captured the layout, not the Activity | `TextView(this@SpaceworkerEnrollmentActivity)` |
+| 12 | `onboarding/SpaceworkerEnrollmentActivity.kt:108` | `BuildConfig` unresolved in `onboarding` package | `import top.spaceworker.rcagent.BuildConfig` |
+| 13 | `onboarding/SpaceworkerEnrollmentActivity.kt:141` | `row.view.setGranted(...)` — `setGranted` is on `Row`, not `LinearLayout` | `row.setGranted(...)` |
+| 14 | `onboarding/SpaceworkerEnrollmentActivity.kt:280-282` | bare `getChildAt` inside `Row` | `view.getChildAt(...)` |
+| 15 | `onboarding/SpaceworkerEnrollmentActivity.kt:285` | `fun granted() = granted()` recursed into itself (ctor param shadowed) | renamed ctor param to `check`, `fun granted() = check()` |
+| 16 | `onboarding/SpaceworkerEnrollmentActivity.kt:281` | `setTextColor(if (ok) 0xFF00C853 else -1)` — Long/Int mismatch | `0xFF00C853.toInt()` |
+| 17 | `settings/SettingsActivity.kt:87` | `Log` used without import | `import android.util.Log` |
+
+Commit chain: `fb24a1a` (setup-gradle), `0f888e6` (Kotlin fixes), `10177ad` (Long/Int + Log).
+
 ---
 
 ## 4. Blockers and unblock plan
 
 | Blocker | Why | Unblock |
 |---|---|---|
-| No local Android toolchain | `java -version` fails; `ANDROID_HOME` unset; no `adb`; no Docker; 3.2 GiB free | **CI build** (`android-build.yml`) on GitHub runners; download the APK artifact |
-| No adb/phone on host | test phone is physical | owner sideloads `app-debug.apk` (BYOD), or runs `provision.sh` from a machine with adb |
+| No local Android toolchain | `java -version` fails; `ANDROID_HOME` unset; no `adb`; no Docker; 3.2 GiB free | **RESOLVED** — CI builds green (run `42585417527`) |
+| No adb/phone on host | test phone is physical | **owner sideloads `app-debug.apk`** (BYOD); `provision.sh` for a machine with adb |
 | No release key | Phase 1 | debug keystore generated by `createDebugKeystore`; **production QR needs a stable fleet key** (signature checksum must match) |
 
-CI flow:
+CI flow (working as of 2026-11-09):
 ```bash
-# after commit on task-254-android-agent
 git push origin task-254-android-agent
 gh run list --workflow android-build.yml --limit 5
-gh run watch <run-id>
-gh run download <run-id> -n spaceworker-rc-apk -D /tmp/t254-apk
+gh run watch <run-id> --exit-status
+# NOTE: `gh run download` timed out on this host; pull the zip via API instead:
+AID=$(gh api repos/softdeployautomation-sketch/spaceworker/actions/runs/<run-id>/artifacts \
+  --jq '.artifacts[] | select(.name=="spaceworker-rc-apk") | .id')
+gh api repos/softdeployautomation-sketch/spaceworker/actions/artifacts/$AID/zip > /tmp/t254-apk.zip
+unzip -o /tmp/t254-apk.zip -d /tmp/t254-apk
+# → /tmp/t254-apk/debug/app-debug.apk, /tmp/t254-apk/release/app-release.apk
 ```
 
 ---
@@ -102,13 +139,17 @@ gh run download <run-id> -n spaceworker-rc-apk -D /tmp/t254-apk
 ## 5. Verification protocol per task
 
 ### T254-A (APK)
-- `cd android-rc && ./gradlew testDebugUnitTest` → BUILD SUCCESSFUL
-- `./gradlew createDebugKeystore assembleDebug assembleRelease` → APK paths exist
+- CI: `android-build.yml` → unit tests + `createDebugKeystore` + `assembleDebug` +
+  `assembleRelease` all green (run `42585417527`). Host cannot run Gradle locally.
 - `bash -n provision.sh && bash -n qr-payload.sh` → 0
 - `grep -rn "MediaProjection" android-rc/app/src/main/kotlin` → only gated path
 - `git status --short` → nothing outside `android-rc/` + docs
-- Phone: install APK → onboarding → accessibility toggle → "Ready"; `adb logcat -s RC:V`
-  shows a11y enabled, screenshot frame, injected tap.
+- Phone (owner, pending): install `/tmp/t254-apk/debug/app-debug.apk` → onboarding →
+  accessibility toggle → "Ready"; `adb logcat -s RC:V` shows a11y enabled, screenshot
+  frame, injected tap. Without adb: Settings → Accessibility → RC Agent; app UI must
+  render the four grant rows with Accessibility green and "Ready".
+- Expected install friction: Play Protect warning on sideload; accept "Install anyway".
+  The APK is debug-signed and arm64-v8a only.
 
 ### T254-B (backend)
 - Service unit tests green; fake-device E2E: fake client sends a JPEG/H.264 frame,
@@ -148,6 +189,14 @@ gh run download <run-id> -n spaceworker-rc-apk -D /tmp/t254-apk
 ---
 
 ## 7. Next action
-1. Commit + push `task-254-android-agent` (T254 files only) → CI builds APK.
-2. If CI green: download artifact, owner sideloads, verify S15/S16 → T254-B.
+1. **Owner:** sideload `/tmp/t254-apk/debug/app-debug.apk` (or re-download from run
+   `42585417527`) on the test phone; open RC Agent → Enrollment; grant Accessibility;
+   confirm "Ready". Report the onboarding screen state (S15/S16). If adb is available,
+   capture `adb logcat -s RC:V`.
+2. While the owner tests: hand **T254-B** to Cline (backend `android-rc/server`:
+   Mosquitto 8883 TLS + rc-relay WSS + rc-api + rc-web viewer; 9-byte header types
+   0x01–0x04; topics `rc/cmd/<id>`, `rc/state/<id>`, `rc/probe/<id>`, `rc/event/<id>`;
+   fake-device E2E). Node v20/npm 10 available locally, so T254-B is verifiable here.
+3. Only after S15/S16 pass: mark T254-A done and start T254-C (Spaceworker install
+   page/QR, mirroring `app/link/vantra/[token]/route.ts`).
 3. If CI red: paste the failing Gradle output into the T254-A2 prompt; fix version/build errors.

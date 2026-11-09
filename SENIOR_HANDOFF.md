@@ -522,27 +522,28 @@ tells you something worse.
 
 ## 6. Current state — revise this block every session
 
-**T254 Android agent — 2026-11-09 (SOURCE-COMPLETE, build blocked → CI).**
+**T254 Android agent — 2026-11-09 (APK BUILT + SIGNED; phone gates pending).**
 Branch `task-254-android-agent` off `main` `b363fa5`; vendored `rc-agent`
 (`ytruongdang/rc-agent` @ `fb88bd76f4d5b41e30d5cc0263bf49cb0787fdd9`) under
 `android-rc/`, app id `top.spaceworker.rcagent`. Owner priorities: BYOD
 install-and-run first, QR/Device-Owner unattended second; backend on
 `/opt/android-rc` on `207.244.224.57`. **Verified:** source for S1/S3–S13/S17/S18;
 `provision.sh` + `qr-payload.sh` pass `bash -n`; `git status` shows nothing outside
-`android-rc/` + docs. **Blocked:** S2/S14–S16 — host has no JDK/Android SDK/adb/
-Docker and only 3.2 GiB free, so the APK cannot be built locally. **Unblock:** new
-`.github/workflows/android-build.yml` builds debug + debug-signed release APK on
-GitHub runners; push the branch, download the `spaceworker-rc-apk` artifact, owner
-sideloads. **Senior fixes already applied:** stale R8 keep rule
-(`com.you.rcagent` → `top.spaceworker.rcagent`), `.gitignore` no longer hides
-`keystore.properties.example`, `qr-payload.sh` now encodes the full provisioning
-JSON (nested extras object + DER cert checksum), `AdminReceiver` parses the
-`rc_ws` port instead of assigning a URL to an Int, onboarding saves the enrollment
-code as the MQTT password and makes Accessibility the only blocking grant.
-**Risk:** upstream pins AGP 8.9.1 + Gradle 9.7.1; if CI rejects the pair, pin the
-wrapper to 8.11.1. Full runbook + per-task verification protocol:
-**`SENIOR_T254_ANDROID_VERIFICATION.md`**. Next: CI green → phone S15/S16 → T254-B
-(backend service).
+`android-rc/` + docs. **CI build PASS** — run `42585417527` (commit `10177ad`):
+unit tests + debug + release green; artifact `spaceworker-rc-apk` id `13658214382`
+(15.5 MB): `app-debug.apk` sha256 `e3d66ce5…daec8970` (14 MB, v2/v3 signed,
+arm64-v8a), `app-release.apk` sha256 `240b6785…ce296504` (12 MB); manifest package
+and components verified. **Only phone gates remain:** S15/S16 need the owner to
+sideload `app-debug.apk` (host has no adb/phone). **Senior fixes:** stale R8 keep
+rule, `.gitignore` example template, `qr-payload.sh` full-JSON QR + DER checksum,
+`AdminReceiver` `rc_ws` port parse, onboarding saves enrollment code as MQTT
+password with Accessibility the only blocking grant; CI also forced real code
+fixes (Config→BackendPrefs MediaProjection, `DevicePolicyManager` extras constant,
+`raw.toMap()`, `onDisableRequested` return type, Activity-context `this` capture,
+`BuildConfig` import, `Row.setGranted`, `view.getChildAt`, `granted()` recursion,
+Long/Int text color, `Log` import). Workflow now uses `gradle/actions/setup-gradle@v4`
+(avoids wrapper 504). Full runbook: **`SENIOR_T254_ANDROID_VERIFICATION.md`**.
+Next: owner sideloads → S15/S16 → hand T254-B (backend) to Cline.
 
 **Last verified: 2026-11-04 14:45 CET (Wilk online + remote origin + public Everwas).**
 New host **`207.244.224.57`** live; old `164.68.105.96` dead. `nats` + `nats-api` active;

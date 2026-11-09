@@ -4,17 +4,24 @@ Rule: update this file **before** each edit (step + verify command) and **after*
 
 ## Senior verification (2026-11-09)
 - Source review PASS for S1/S3–S13/S17/S18; `git status` clean outside `android-rc/` + docs.
-- **Build/install gates (S2/S14–S16) are BLOCKED on this host** (no JDK/SDK/adb/Docker; 3.2 GiB free).
-  Unblock = `.github/workflows/android-build.yml` → push branch → download `spaceworker-rc-apk`.
+- **CI build PASS** — run `42585417527` (workflow `android-build.yml`, commit `10177ad`):
+  unit tests + debug + release green. Artifact `spaceworker-rc-apk` id `13658214382`.
+  - `app-debug.apk` sha256 `e3d66ce5…daec8970` (14 MB, v2/v3 signed, arm64-v8a)
+  - `app-release.apk` sha256 `240b6785…ce296504` (12 MB)
+- **S15/S16 still BLOCKED on the phone** (owner sideload pending; host has no adb/phone).
 - Senior fixes applied: `proguard-rules.pro` keep rule, `.gitignore` example template,
   `qr-payload.sh` full-JSON QR + DER cert hash + nested extras object, `AdminReceiver`
   `rc_ws` port parse, onboarding saves enrollment code as MQTT password and treats
   Accessibility as the only blocking grant.
+- CI-driven fixes (no local toolchain): `setup-gradle@v4` (wrapper 504), `Config`→`BackendPrefs`
+  for MediaProjection, `DevicePolicyManager` extras constant, `raw.toMap()`,
+  `onDisableRequested` return type, Activity-context `this` capture, `BuildConfig` import,
+  `Row.setGranted`, `view.getChildAt`, `granted()` recursion, Long/Int text color, `Log` import.
 - Full runbook: `SENIOR_T254_ANDROID_VERIFICATION.md`.
 
 ## T254-A — Vendor rc-agent + BYOD install-and-run + QR unattended
 - [x] S1  Create `android-rc/`, vendor rc-agent at pinned SHA, keep LICENSE/NOTICE, add `UPSTREAM.md`
-- [ ] S2  Gradle builds green (`./gradlew testDebugUnitTest`) — BLOCKED: no JDK/Android SDK on host (~3.1GiB free)
+- [x] S2  Gradle builds green (CI run `42585417527`: `testDebugUnitTest` + assemble green)
 - [x] S3  Set `applicationId top.spaceworker.rcagent`; build defaults `RC_MQTT_BROKER` / `RC_WS_BASE` / `RC_SERVER`
 - [x] S4  Add `SpaceworkerEnrollmentActivity` (server URL + code + QR scan)
 - [x] S5  Add single-screen grant wizard (accessibility, notifications, battery, overlay)
@@ -26,9 +33,9 @@ Rule: update this file **before** each edit (step + verify command) and **after*
 - [x] S11 `provision.sh` (adb grants, idempotent, echoes steps)
 - [x] S12 `qr-payload.sh` (emit provisioning JSON from apk + cert + enroll code)
 - [x] S13 `README_T254A.md`
-- [ ] S14 `assembleRelease` signed APK — BLOCKED: no JDK/Android SDK on host
-- [ ] S15 Install via `provision.sh` on test phone; logcat: accessibility on, screenshot frame, tap injected — BLOCKED: no adb/phone on host
-- [ ] S16 Verify BYOD onboarding renders + reaches "Ready" — BLOCKED: no adb/phone on host
+- [x] S14 `assembleRelease` signed APK — CI artifact `spaceworker-rc-apk` (debug 14 MB, release 12 MB, v2/v3 signed)
+- [ ] S15 Install via `provision.sh` on test phone; logcat: accessibility on, screenshot frame, tap injected — BLOCKED: owner sideload pending (host has no adb/phone)
+- [ ] S16 Verify BYOD onboarding renders + reaches "Ready" — BLOCKED: owner sideload pending
 - [x] S17 Verify MediaProjection is not the default (grep) — default path = Accessibility JPEG; MediaProjection only behind Settings toggle
 - [x] S18 Confirm no Spaceworker app/lib/prisma files changed — changes confined to `android-rc/` + `TASK_254_STEPS.md`
 
