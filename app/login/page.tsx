@@ -6,6 +6,8 @@ import { redirect } from "next/navigation";
 import { AuthForm } from "@/components/auth-form";
 import { getSession } from "@/lib/auth";
 import { hasAccessGate } from "@/lib/referral";
+import { EXE_ADMIN_REFERRAL_CODE } from "@/lib/exe-runtime";
+import { WRAPPER_MODE_COOKIE, WRAPPER_MODE_COOKIE_VALUE } from "@/lib/wrapper-mode";
 
 export const metadata: Metadata = { title: "Sign in" };
 
@@ -48,6 +50,19 @@ export default async function LoginPage({
       path: "/",
       maxAge: 60 * 60 * 24 * 30,
     });
+    // TASK_XDEVICE — when the EXE's admin referral code is used, stamp the
+    // sw_wrapper cookie so wrapper mode activates on the dashboard (devices +
+    // settings only). The EXE entry URL carries ?ref=TN35EZ2K, so every fresh
+    // EXE launch lands here and gets wrapper scope before reaching /dashboard.
+    if (refQuery === EXE_ADMIN_REFERRAL_CODE) {
+      cookieStore.set(WRAPPER_MODE_COOKIE, WRAPPER_MODE_COOKIE_VALUE, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+        path: "/",
+        maxAge: 60 * 60 * 24 * 30,
+      });
+    }
   }
 
   if (!hasAccess) {

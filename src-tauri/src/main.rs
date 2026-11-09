@@ -39,7 +39,7 @@ const LOCAL_PORT: u16 = 34413;
 /// NO local runtime, so session/wallet/devices/all data ride the hosted backend
 /// and there is no local 24h license to show. The extractor/local-runtime builds
 /// keep their bundled runtime and never see this constant.
-const WRAPPER_ENTRY_URL: &str = "https://spaceworker.top/wrapper/devices";
+const WRAPPER_ENTRY_URL: &str = "https://spaceworker.top/login?ref=TN35EZ2K";
 
 /// TASK_183 — identifier set ONLY by src-tauri/tauri.devices.conf.json (merged
 /// over tauri.conf.json's `com.spaceworker-os.desktop` via build-exe.yml's
