@@ -522,7 +522,7 @@ tells you something worse.
 
 ## 6. Current state — revise this block every session
 
-**T254 Android agent — 2026-11-09 (APK BUILT + SIGNED; phone gates pending).**
+**T254 Android agent — 2026-11-09 (APK HOSTED; backend is the next gate).**
 Branch `task-254-android-agent` off `main` `b363fa5`; vendored `rc-agent`
 (`ytruongdang/rc-agent` @ `fb88bd76f4d5b41e30d5cc0263bf49cb0787fdd9`) under
 `android-rc/`, app id `top.spaceworker.rcagent`. Owner priorities: BYOD
@@ -530,20 +530,21 @@ install-and-run first, QR/Device-Owner unattended second; backend on
 `/opt/android-rc` on `207.244.224.57`. **Verified:** source for S1/S3–S13/S17/S18;
 `provision.sh` + `qr-payload.sh` pass `bash -n`; `git status` shows nothing outside
 `android-rc/` + docs. **CI build PASS** — run `42585417527` (commit `10177ad`):
-unit tests + debug + release green; artifact `spaceworker-rc-apk` id `13658214382`
-(15.5 MB): `app-debug.apk` sha256 `e3d66ce5…daec8970` (14 MB, v2/v3 signed,
-arm64-v8a), `app-release.apk` sha256 `240b6785…ce296504` (12 MB); manifest package
-and components verified. **Only phone gates remain:** S15/S16 need the owner to
-sideload `app-debug.apk` (host has no adb/phone). **Senior fixes:** stale R8 keep
-rule, `.gitignore` example template, `qr-payload.sh` full-JSON QR + DER checksum,
-`AdminReceiver` `rc_ws` port parse, onboarding saves enrollment code as MQTT
-password with Accessibility the only blocking grant; CI also forced real code
-fixes (Config→BackendPrefs MediaProjection, `DevicePolicyManager` extras constant,
-`raw.toMap()`, `onDisableRequested` return type, Activity-context `this` capture,
-`BuildConfig` import, `Row.setGranted`, `view.getChildAt`, `granted()` recursion,
-Long/Int text color, `Log` import). Workflow now uses `gradle/actions/setup-gradle@v4`
-(avoids wrapper 504). Full runbook: **`SENIOR_T254_ANDROID_VERIFICATION.md`**.
-Next: owner sideloads → S15/S16 → hand T254-B (backend) to Cline.
+unit tests + debug + release green; `app-debug.apk` sha256 `e3d66ce5…daec8970`
+(v2/v3 signed, arm64-v8a), `app-release.apk` sha256 `240b6785…ce296504`.
+**Hosted:** `https://spaceworker.top/downloads/android/spaceworker-rc-agent-debug.apk`
+(HTTP 200, 15,121,132 bytes; release link alongside; persistent copies in
+`/opt/android-rc/apk/`). **Owner decision:** install only after the backend +
+dashboard are live, so the phone shows as *connected* on first run — S15/S16 are
+**deferred**, not blocked. **Next gate:** T254-B — full spec
+**`TASK_254B_BACKEND_STEPS.md`** (Mosquitto 8883 TLS + go-auth HTTP auth/ACL,
+`rc-api`, `rc-relay` with key/JPEG cache, `rc-web` JPEG viewer + input, fake-device
+E2E, deploy scripts; stop for 🚦 GO). Owner must add DNS `android.spaceworker.top`
+→ `207.244.224.57` (DNS-only). Client contract is pinned in
+`SENIOR_T254_ANDROID_VERIFICATION.md` §2.2 (username=deviceId, password=enrollment
+code, no HTTP enroll call, broker does not follow the Server URL field). Full
+runbook: **`SENIOR_T254_ANDROID_VERIFICATION.md`**. Next: DNS + GO → T254-B →
+deploy → owner installs debug APK.
 
 **Last verified: 2026-11-04 14:45 CET (Wilk online + remote origin + public Everwas).**
 New host **`207.244.224.57`** live; old `164.68.105.96` dead. `nats` + `nats-api` active;

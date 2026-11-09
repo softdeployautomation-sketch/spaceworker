@@ -50,13 +50,14 @@ re-deriving anything. Update this file in place at the end of every T254 session
 | S13 README | PASS | `android-rc/README_T254A.md` |
 | S2 reproducible build | **PASS (CI)** | run `42585417527` green: unit tests + debug + release |
 | S14 signed APK | **PASS (CI)** | `app-debug.apk` 14 MB, `app-release.apk` 12 MB; v2/v3 signing block present; arm64-v8a |
-| S15 install + logcat | **BLOCKED → phone** | no adb/phone on host; owner sideload pending |
-| S16 BYOD "Ready" render | **BLOCKED → phone** | same |
+| S15 install + logcat | **DEFERRED — backend first** | owner decision 2026-11-09: install only after the dashboard is live |
+| S16 BYOD "Ready" render | **DEFERRED — backend first** | same |
 | S17 MediaProjection not default | PASS | grep: only `SessionBus.kt:88` gated path |
 | S18 no Spaceworker app/lib/prisma changes | PASS | `git status` changes only under `android-rc/` + docs |
 
-**Verdict:** T254-A is **built and signed**. Only the on-phone gates (S15/S16) remain,
-and they need the owner to sideload `app-debug.apk` — the host has no adb/phone.
+**Verdict:** T254-A is **built, signed, and hosted**. S15/S16 are deliberately deferred:
+the owner wants the backend + dashboard live first so the phone shows as *connected*
+immediately after install. T254-B (`TASK_254B_BACKEND_STEPS.md`) is the next gate.
 
 Build evidence:
 - Workflow run `42585417527` (`android-build.yml`, `task-254-android-agent` @ `10177ad`).
@@ -67,6 +68,42 @@ Build evidence:
   `SpaceworkerEnrollmentActivity`, `MaintenanceOverlayService`, `AdminReceiver`,
   `BIND_ACCESSIBILITY_SERVICE` all present. versionName `1.0.0-t254a`, versionCode 1,
   minSdk 26 / targetSdk 35. Native ABI: **arm64-v8a only** (by design, `abiFilters`).
+
+### 2.1 APK hosting (2026-11-09)
+
+Uploaded to the box and served by the existing nginx `location /downloads/` rule
+(`root /opt/spaceworker/public`):
+
+- Debug (use this one): `https://spaceworker.top/downloads/android/spaceworker-rc-agent-debug.apk`
+  — HTTP 200, `application/octet-stream`, 15,121,132 bytes, sha256 matches `e3d66ce5…daec8970`.
+- Release: `https://spaceworker.top/downloads/android/spaceworker-rc-agent-release.apk`
+  — 12,183,231 bytes, sha256 matches `240b6785…ce296504`.
+
+Persistent copies live at `/opt/android-rc/apk/` (the `public/downloads` copy can be
+wiped by a future deploy that rsyncs the repo with `--delete`). Re-copy if the link 404s.
+
+### 2.2 Client ↔ backend contract (verified from source)
+
+- MQTT broker default is `ssl://android.spaceworker.top:8883` (`BuildConfig.MQTT_BROKER`);
+  the onboarding "Server URL" field **does not** change it. Deploy at that hostname.
+- MQTT username = `deviceId` (`ANDROID_ID`), password = the enrollment code the user
+  types. Client id = `deviceId`. MQTT 5, LWT retained `rc/state/<id>` `{"online":false}`.
+- The current APK **never calls an HTTP enroll endpoint** — the code is used directly as
+  the MQTT password. Phase 1 auth = one rotatable fleet code + per-username ACL.
+- Topics: `rc/cmd/<id>`, `rc/state/<id>`, `rc/probe/<id>`, `rc/event/<id>`.
+- Session: server publishes `session.start` with `wsUrl` + `token`; device appends
+  `?token=…` and connects. Frames = 9-byte header (type + pts µs BE) + payload;
+  `0x01` config, `0x02` key, `0x03` delta, `0x04` JPEG. Default capture is **JPEG**.
+- Viewer input JSON: `hello`, `viewer.join`, `touch|pointer` (`action`, `nx`, `ny`,
+  `pointerId`), `key`, `text`, `scroll`.
+- `wsBase` derives from the saved host + relay port; the server can hand any `wsUrl`.
+
+### 2.3 Next gate — T254-B
+
+Full task: **`TASK_254B_BACKEND_STEPS.md`**. Owner wants "all set first": deploy
+`android.spaceworker.top` (DNS → `207.244.224.57`), Mosquitto 8883 TLS with HTTP
+auth/ACL, `rc-api`, `rc-relay` (WSS + key/JPEG cache), `rc-web` viewer (JPEG + input),
+fake-device E2E, then the real phone. DNS and the deploy GO are owner actions.
 
 ---
 
@@ -118,7 +155,10 @@ Commit chain: `fb24a1a` (setup-gradle), `0f888e6` (Kotlin fixes), `10177ad` (Lon
 | Blocker | Why | Unblock |
 |---|---|---|
 | No local Android toolchain | `java -version` fails; `ANDROID_HOME` unset; no `adb`; no Docker; 3.2 GiB free | **RESOLVED** — CI builds green (run `42585417527`) |
-| No adb/phone on host | test phone is physical | **owner sideloads `app-debug.apk`** (BYOD); `provision.sh` for a machine with adb |
+| No backend / dashboard | `android.spaceworker.top` has no DNS, cert, broker, API, relay, or viewer | **T254-B** (`TASK_254B_BACKEND_STEPS.md`) + T254-D deploy |
+| DNS `android.spaceworker.top` | `dig +short` returns nothing | **owner** creates A record → `207.244.224.57`, DNS-only (proxy OFF) |
+| MQTT auth | client sends username=`deviceId`, password=enrollment code; Mosquitto static `password_file` cannot do dynamic users | go-auth HTTP backend → `rc-api` (approved fallback: EMQX 5 HTTP authn/authz) |
+| No adb/phone on host | test phone is physical | **deferred by owner** until the dashboard is live, then owner sideloads `app-debug.apk` |
 | No release key | Phase 1 | debug keystore generated by `createDebugKeystore`; **production QR needs a stable fleet key** (signature checksum must match) |
 
 CI flow (working as of 2026-11-09):
@@ -152,10 +192,14 @@ unzip -o /tmp/t254-apk.zip -d /tmp/t254-apk
   The APK is debug-signed and arm64-v8a only.
 
 ### T254-B (backend)
-- Service unit tests green; fake-device E2E: fake client sends a JPEG/H.264 frame,
-  viewer decodes; MQTT `session.start`/`stop` round-trip; no listening port on device.
-- Protocol must match `android-rc/CLAUDE.md` §"Data plane" (9-byte header, types
-  0x01–0x04) and MQTT topics `rc/cmd/<id>`, `rc/state/<id>`, `rc/probe/<id>`, `rc/event/<id>`.
+- `npm test` + `npm run e2e` green locally; fake device sends a JPEG `0x04` frame with
+  the 9-byte header and the viewer receives it; viewer `touch` reaches the device.
+- MQTT auth: correct fleet code accepted, wrong code and cross-device topic denied.
+- Relay: late viewer receives the cached `0x01` config + `0x02` key / `0x04` JPEG.
+- Deployed: `https://android.spaceworker.top/api/health` → `ok:true`; 8883 TLS
+  handshake; `https://android.spaceworker.top/` lists the fake device online.
+- Real phone: install after the above; MQTT connects with `https://android.spaceworker.top`
+  + fleet code; device appears online; Connect shows the screen; tap works.
 
 ### T254-C (Spaceworker)
 - `npx tsc --noEmit`; `npm test`; `npm run build`; `npx prisma validate`
@@ -189,14 +233,17 @@ unzip -o /tmp/t254-apk.zip -d /tmp/t254-apk
 ---
 
 ## 7. Next action
-1. **Owner:** sideload `/tmp/t254-apk/debug/app-debug.apk` (or re-download from run
-   `42585417527`) on the test phone; open RC Agent → Enrollment; grant Accessibility;
-   confirm "Ready". Report the onboarding screen state (S15/S16). If adb is available,
-   capture `adb logcat -s RC:V`.
-2. While the owner tests: hand **T254-B** to Cline (backend `android-rc/server`:
-   Mosquitto 8883 TLS + rc-relay WSS + rc-api + rc-web viewer; 9-byte header types
-   0x01–0x04; topics `rc/cmd/<id>`, `rc/state/<id>`, `rc/probe/<id>`, `rc/event/<id>`;
-   fake-device E2E). Node v20/npm 10 available locally, so T254-B is verifiable here.
-3. Only after S15/S16 pass: mark T254-A done and start T254-C (Spaceworker install
-   page/QR, mirroring `app/link/vantra/[token]/route.ts`).
-3. If CI red: paste the failing Gradle output into the T254-A2 prompt; fix version/build errors.
+1. **Owner:** create DNS A record `android.spaceworker.top` → `207.244.224.57`
+   (DNS-only / proxy OFF) and give 🚦 GO for the box deploy.
+2. **Hand T254-B to Cline** with the prompt below (`TASK_254B_BACKEND_STEPS.md`):
+   build `android-rc/server` (Mosquitto 8883 TLS + HTTP auth/ACL, `rc-api`, `rc-relay`
+   with key/JPEG cache, `rc-web` JPEG viewer + input), fake-device E2E, unit tests,
+   and the deploy scripts. **Stop before deploy for owner GO.**
+3. **Senior:** review the diff, run `npm test` + `npm run e2e`, then deploy T254-D
+   after GO; verify `/api/health`, 8883 TLS, and the regression pins.
+4. **Owner:** install `https://spaceworker.top/downloads/android/spaceworker-rc-agent-debug.apk`
+   (debug only — do not install the release APK), enter `https://android.spaceworker.top`
+   + the fleet enrollment code, grant Accessibility. The device must appear **online** in
+   `https://android.spaceworker.top/`; Connect shows the screen; tap works. This closes
+   S15/S16.
+5. Then T254-C (Spaceworker install page/QR, mirroring `app/link/vantra/[token]/route.ts`).
