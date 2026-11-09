@@ -50,6 +50,13 @@ const nextConfig: NextConfig = {
     "@cline/llms",
     "@cline/agents",
     "@cline/shared",
+    // TASK_201 S7 — embedded Postgres for the mailer EXE's local runtime.
+    // Externalized for the same reason as tesseract.js: PGlite loads its .wasm
+    // from its own package dir at RUNTIME, which breaks if Turbopack inlines
+    // and freezes __dirname. Never loaded by the hosted web app (guarded by
+    // SPACEWORKER_LOCAL_EXE in lib/local-exe-db.ts / instrumentation.ts).
+    "@electric-sql/pglite",
+    "pglite-prisma-adapter",
   ],
   // Pin the workspace root explicitly — an unrelated package.json in the parent
   // home directory otherwise confuses Turbopack's root inference, causing bogus

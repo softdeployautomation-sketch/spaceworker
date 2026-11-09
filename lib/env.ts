@@ -1,6 +1,8 @@
 // Typed environment accessor. Throws at boot if a required var is missing, so a
 // misconfigured deployment fails loudly instead of failing at runtime mid-request.
 
+import { isLocalExeRuntime } from "./exe-runtime";
+
 function required(name: string): string {
   const value = process.env[name];
   if (!value || value.trim() === "") {
@@ -80,7 +82,22 @@ function optionalSecret(name: string): string {
   return guardAgainstPlaceholder(name, value);
 }
 
-const appBaseUrl = required("APP_BASE_URL");
+// TASK_201 S7 — inside the Tauri-bundled local runtime (SPACEWORKER_LOCAL_EXE
+// =true, written ONLY into the EXE's own .env.local by runtime-assemble.mjs),
+// several hosted-only vars are structurally absent by design: there is no
+// DATABASE_URL (the local database is the embedded PGlite opened through a
+// driver adapter, lib/local-exe-db.ts), no Resend key, and no real host. Those
+// exact reads degrade to "" ONLY in that runtime — every other deployment
+// (web, VPS, CI) keeps the loud boot-time failure below, unchanged. The mailer
+// variant additionally gets real values for SESSION_SECRET / APP_BASE_URL /
+// INTERNAL_BEARER_TOKEN / MAILBOX_ENCRYPTION_KEY written at assemble time; the
+// extractor/devices variants keep their .env.local byte-identical to before.
+const localExe = isLocalExeRuntime();
+function hostVar(name: string): string {
+  return localExe ? process.env[name] ?? "" : required(name);
+}
+
+const appBaseUrl = hostVar("APP_BASE_URL");
 
 // TASK_122 (B11) D2 — the PUBLIC install-link host must be movable
 // independently of the other ten `appBaseUrl` call sites (PIN callback,
@@ -115,10 +132,14 @@ for (const name of [
 }
 
 export const env = {
-  databaseUrl: required("DATABASE_URL"),
-  sessionSecret: requiredSecret("SESSION_SECRET"),
-  resendApiKey: requiredSecret("RESEND_API_KEY"),
-  emailFrom: required("EMAIL_FROM"),
+  // TASK_201 S7 — DATABASE_URL / RESEND_API_KEY / EMAIL_FROM / SESSION_SECRET
+  // are structurally absent inside the bundled local runtime (see hostVar and
+  // the localExe note above); on every other deployment these keep their loud
+  // required()/requiredSecret() failures, unchanged.
+  databaseUrl: hostVar("DATABASE_URL"),
+  sessionSecret: localExe ? process.env.SESSION_SECRET ?? "" : requiredSecret("SESSION_SECRET"),
+  resendApiKey: localExe ? "" : requiredSecret("RESEND_API_KEY"),
+  emailFrom: hostVar("EMAIL_FROM"),
   appBaseUrl,
   publicLinkBaseUrl,
 

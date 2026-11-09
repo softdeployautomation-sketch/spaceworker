@@ -1,5 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 
+import { isLocalMailerRuntime } from "./exe-runtime";
+
 // Prisma client singleton — avoids exhausting connections in dev (hot reload)
 // and guards against duplicate instantiations across route handlers.
 //
@@ -19,7 +21,21 @@ const globalForPrisma = globalThis as unknown as {
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 function loadClient(): PrismaClient {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  // TASK_201 S7 — the mailer EXE's bundled local runtime: the client is the
+  // embedded PGlite Postgres (a real local replica — lib/local-exe-db.ts),
+  // constructed synchronously so this Proxy's property chains keep working.
+  // Shares lib/prisma.ts's globalForPrisma key, so whichever proxy is touched
+  // first wins and BOTH serve the same single client. isLocalMailerRuntime()
+  // also excludes the CI build phase (see the comment on it): PGlite must
+  // never be constructed during `next build`'s prerender.
+  if (isLocalMailerRuntime()) {
+     
+    const { getLocalExePrismaSync } = require("./local-exe-db") as typeof import("./local-exe-db");
+    const c = globalForPrisma.prisma ?? getLocalExePrismaSync();
+    globalForPrisma.prisma = c;
+    return c;
+  }
+   
   const { PrismaClient } = require("@prisma/client") as typeof import("@prisma/client");
   const c =
     globalForPrisma.prisma ??

@@ -5,6 +5,36 @@
 // incident 2026-09-24: extractor stuck "queued", private browser unconfigured,
 // US/Canada routes missing — all three were just missing env keys).
 export async function register(): Promise<void> {
+  // TASK_201 S7c — MUST be the very first thing: Turbopack compiles every
+  // serverExternalPackages require into a hashed alias ("pkg-<16hex>") whose
+  // directory the CI standalone build never materializes; without this shim
+  // the local runtime dies on `require("@electric-sql/pglite-<hash>")` before
+  // serving any request (run 38052488430). Dynamic import keeps the `module`
+  // builtin out of any edge-runtime evaluation of this hook. Inert on hosted.
+  if (process.env.NEXT_RUNTIME === "nodejs") {
+    const { installTurbopackExternalAliasShim } = await import(
+      "./lib/turbopack-external-alias"
+    );
+    installTurbopackExternalAliasShim();
+  }
+
   const { logEnvHealth } = await import("./lib/env-health");
   logEnvHealth();
+
+  // TASK_201 S7 — mailer EXE local runtime only (SPACEWORKER_LOCAL_EXE=true is
+  // written exclusively into the Tauri-bundled runtime's .env.local; the hosted
+  // web app never sets it, so this branch is dead code there by design). Comes
+  // up BEFORE any request is served: embedded PGlite Postgres + schema + the
+  // single local user, then the auto-drain loop. The dynamic imports keep
+  // PGlite entirely out of the web build's request path.
+  if (process.env.NEXT_RUNTIME === "nodejs") {
+    const { isLocalMailerRuntime } = await import("./lib/exe-runtime");
+    if (isLocalMailerRuntime()) {
+      const { initLocalExeDatabase } = await import("./lib/local-exe-db");
+      await initLocalExeDatabase();
+      const { startLocalExeDrainLoop } = await import("./lib/local-exe-drain");
+      startLocalExeDrainLoop();
+      console.log("[local-exe] database ready; auto-drain loop started");
+    }
+  }
 }

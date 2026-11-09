@@ -1,5 +1,11 @@
 generator client {
   provider = "prisma-client-js"
+  // TASK_201 S7 — opt-in driver adapters so the mailer EXE's bundled local
+  // runtime can construct PrismaClient with the embedded PGlite Postgres
+  // adapter (lib/local-exe-db.ts). Purely additive: without an `adapter`
+  // passed at instantiation (the hosted web app, always), the generated client
+  // uses the normal engine exactly as before.
+  previewFeatures = ["driverAdapters"]
 }
 
 datasource db {

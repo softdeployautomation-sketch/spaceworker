@@ -35,7 +35,20 @@ export function Shell({ children, buildTarget }: ShellProps) {
             <span className="h-[11px] w-[11px] rounded-full bg-[#eab308]/70" />
             <span className="h-[11px] w-[11px] rounded-full bg-[#22c55e]/70" />
           </div>
-          <Link href="/dashboard" className="flex items-center gap-2">
+          {/* TASK_201 — the logo is the "go home" affordance, so its target is
+              THIS build's home route, not a hardcoded /dashboard. The Mailer
+              EXE deliberately ships WITHOUT the Overview page (its nav is
+              Campaigns + Settings only; the overview's stats are DB/embedded-
+              backed and its hero copy is web-centric), so pointing the logo at
+              /dashboard would drop the mailer user onto a page this build never
+              meant to show. Mailer home = Campaigns; the web app and the
+              Extractor EXE keep /dashboard exactly as before. The Overview page
+              is ALSO guarded (app/dashboard/page.tsx redirects mailer →
+              Campaigns) so a direct URL or stale link can't bypass this. */}
+          <Link
+            href={buildTarget === "mailer" ? "/dashboard/campaigns" : "/dashboard"}
+            className="flex items-center gap-2"
+          >
             <LogoMark />
             <span className="font-display text-[12.5px] font-bold text-fg">
               SpaceWorker OS

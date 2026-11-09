@@ -80,6 +80,9 @@ const NAV_ITEMS: Omit<NavItem, "active">[] = [
 // exact ExeBuildTarget values from lib/exe-build-target.ts.
 const BUILD_ALLOWED_HREFS: Record<string, Set<string> | undefined> = {
   extractor: new Set(["/dashboard", "/dashboard/extract", "/dashboard/settings"]),
+  // TASK_201 merged: the mailer EXE now ships the embedded local DB, so
+  // Overview (/dashboard) is backed again; Campaigns + Settings stay the
+  // mailer-native surfaces. Keep all three so the startup route resolves.
   mailer: new Set(["/dashboard", "/dashboard/campaigns", "/dashboard/settings"]),
 };
 

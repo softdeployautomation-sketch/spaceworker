@@ -196,7 +196,7 @@ async function issueExeLicense(payment: {
   // product's standard 180-day term, unchanged from before this existed.
   const daysValid = payment.durationDays ?? undefined;
 
-  const { licenseKey, expiresAt } = generateLicenseKey({
+  const { licenseKey, issuedAt, expiresAt } = generateLicenseKey({
     licensee: payment.user.email,
     plan: product.plan,
     daysValid,
@@ -241,6 +241,7 @@ async function issueExeLicense(payment: {
       html: exeLicenseIssuedEmailHtml({
         productName: product.name,
         licenseKey,
+        issuedAt,
         expiresAt,
         claimUrl,
       }),

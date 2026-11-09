@@ -419,14 +419,14 @@ async function issueLicense(
         ? exeLicenseWelcomeEmailHtml({
             productName: product.name,
             licenseKey: key.licenseKey,
+            issuedAt: key.issuedAt,
             expiresAt: key.expiresAt,
-            claimUrl,
           })
         : exeLicenseIssuedEmailHtml({
             productName: product.name,
             licenseKey: key.licenseKey,
+            issuedAt: key.issuedAt,
             expiresAt: key.expiresAt,
-            claimUrl,
           }),
       eventType: "exe_license_issued",
     });

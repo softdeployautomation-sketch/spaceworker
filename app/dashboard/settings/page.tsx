@@ -8,7 +8,7 @@ import { ChangePasswordForm } from "@/components/change-password-form";
 import { NotificationsSettings } from "@/components/notifications-settings";
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
-import { accountHref, isLocalExeRuntime } from "@/lib/exe-runtime";
+import { isLocalExeRuntime, LICENSE_PURCHASE_URL } from "@/lib/exe-runtime";
 import { resolveWrapperMode } from "@/lib/wrapper-mode";
 import { getCurrentUser } from "@/lib/session-user";
 import { generateTelegramLinkToken, parseTelegramLinkToken } from "@/lib/telegram";
@@ -42,13 +42,20 @@ export default async function SettingsPage() {
   // security/etc. cards are web-host-only. Split here so the EXE build never
   // touches the DB. (Wrapper excluded above — see TASK_183.)
   if (isLocalExeRuntime() && !wrapper) {
+    // TASK_201 S7 — the mailer EXE is the standalone replica: its Settings
+    // carry the local drain controls (sending) above the licence panel. The
+    // extractor/devices EXEs keep their layout exactly as it was.
+    const { exeBuildTarget } = await import("@/lib/exe-build-target");
+    const { LocalDrainSettings } = await import("@/components/local-drain-settings");
+    const isMailer = exeBuildTarget() === "mailer";
     return (
       <div className="flex flex-col gap-6">
         <div>
           <h1 className="text-2xl font-bold text-fg">Settings</h1>
           <p className="mt-1 text-sm text-fg-muted">Licensing and preferences for this device.</p>
         </div>
-        <ExeLicensePanel buyHref={accountHref("/pricing")} />
+        {isMailer ? <LocalDrainSettings /> : null}
+        <ExeLicensePanel buyHref={LICENSE_PURCHASE_URL} />
       </div>
     );
   }

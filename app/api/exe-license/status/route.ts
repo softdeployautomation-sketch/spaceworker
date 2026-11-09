@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { hostname } from "os";
 
-import { exeLicenseSecret } from "@/lib/exe-license";
+import { exeLicenseSecret, decodeLicenseKey } from "@/lib/exe-license";
 import { validateLicenseKey } from "@/lib/exe-license-validator";
 import { isLocalExeRuntime, HOSTED_APP_URL } from "@/lib/exe-runtime";
 import { exeBuildTarget } from "@/lib/exe-build-target";
@@ -134,8 +134,9 @@ export async function POST() {
       const validation = await validateLicenseKey(state.activation.licenseKey, secret, {
         currentMachineId,
       });
+      const machineMatches = validateMachineId(state.activation.machineId, currentMachineId);
 
-      if (validation.valid && validateMachineId(state.activation.machineId, currentMachineId)) {
+      if (validation.valid && machineMatches) {
         // Fixed 2026-09-21 — the offline signature check above only proves
         // the key was validly signed and bound to THIS machine at activation
         // time; it can never know an admin has since unbound/deleted/
@@ -164,15 +165,74 @@ export async function POST() {
           expiresAt: validation.expiresAt,
           expiresAtDate: validation.expiresAtDate?.toISOString(),
           licensedAt: state.activation.activatedAt,
+          machineId: currentMachineId,
         });
       }
 
-      // Stored key failed — distinguish a copied binding from a genuinely dead key.
-      const copied = state.activation.machineId.toLowerCase() !== currentMachineId;
-      const message = copied
-        ? "This license is bound to another computer. Enter a license for this machine, or activate with the key you purchased."
-        : validation.error;
-      return NextResponse.json({ licensed: false, inTrial: false, message });
+      // --- Secret-drift fallback (the "genuinely-purchased key says invalid"
+      //     bug) ---
+      // The offline check above re-derives the HMAC with the EXE_LICENSE_SECRET
+      // BAKED INTO THIS EXE AT CI BUILD TIME. A key bought/minted on the hosted
+      // site is signed with the PRODUCTION secret. When those two differ, the
+      // offline check fails EVEN THOUGH the key is real — it was only ever
+      // stored here because a prior activate() already verified it server-side
+      // (auto-bind re-signs with the authoritative secret). So a failed offline
+      // signature is NOT proof of a forged key; it is overwhelmingly secret
+      // drift. Rather than hard-lock a paying user, we fall back to the HOSTED
+      // SERVER as the source of truth: is this exact key still this license's
+      // active binding for this product? (The DB row only exists after a valid
+      // signature check, so the hosted answer can't be forged the way a local
+      // file can.) Offline-first / fail-open is preserved: if the server is
+      // unreachable, stillValidLive returns true and an already-bound, unexpired
+      // key keeps working — the same offline posture the fast path has always had.
+      const decoded = decodeLicenseKey(state.activation.licenseKey);
+      if (!decoded || !machineMatches) {
+        // No decodable payload at all = genuinely dead/malformed, or the stored
+        // activation belongs to a different machine (copied). Either way it is
+        // a hard miss, not drift.
+        const copied = !machineMatches;
+        return NextResponse.json({
+          licensed: false,
+          inTrial: false,
+          message: copied
+            ? "This license is bound to another computer. Enter a license for this machine, or activate with the key you purchased."
+            : validation.error,
+        });
+      }
+
+      // Expiry from the (unsigned) payload — a drifted key can still be past due.
+      const expiry = decoded.expires_at ? new Date(decoded.expires_at) : null;
+      if (expiry && !Number.isNaN(expiry.getTime()) && expiry.getTime() <= Date.now()) {
+        return NextResponse.json({
+          licensed: false,
+          inTrial: false,
+          message: "This license has expired. Renew it to keep using this tool.",
+        });
+      }
+
+      const stillValid = await stillValidLive(
+        decoded.licensee,
+        state.activation.licenseKey,
+        decoded.product,
+      );
+      if (!stillValid) {
+        await clearActivation();
+        return NextResponse.json({
+          licensed: false,
+          inTrial: false,
+          message: "This license has been revoked. Contact support if this wasn't expected.",
+        });
+      }
+
+      return NextResponse.json({
+        licensed: true,
+        licensee: decoded.licensee,
+        plan: decoded.plan,
+        expiresAt: decoded.expires_at,
+        expiresAtDate: expiry && !Number.isNaN(expiry.getTime()) ? expiry.toISOString() : undefined,
+        licensedAt: state.activation.activatedAt,
+        machineId: currentMachineId,
+      });
     } catch {
       // Signing secret not configured on this machine — cannot validate the key.
       return NextResponse.json(
@@ -202,6 +262,7 @@ export async function POST() {
       licensed: false,
       inTrial: false,
       requiresEmail: true,
+      machineId: currentMachineId,
     });
   }
 
@@ -212,7 +273,7 @@ export async function POST() {
       ? state.trialStartedAt
       : serverStart;
   if (!effectiveStartedAt) {
-    return NextResponse.json({ licensed: false, inTrial: false, requiresEmail: true });
+    return NextResponse.json({ licensed: false, inTrial: false, requiresEmail: true, machineId: currentMachineId });
   }
 
   // If the authoritative start came from the server (a returning machine whose
@@ -237,6 +298,7 @@ export async function POST() {
       trialEndsAt: new Date(
         new Date(effectiveStartedAt).getTime() + TRIAL_HOURS * 60 * 60 * 1000,
       ).toISOString(),
+      machineId: currentMachineId,
     });
   }
 
@@ -244,5 +306,6 @@ export async function POST() {
     licensed: false,
     inTrial: false,
     trialStartedAt: effectiveStartedAt,
+    machineId: currentMachineId,
   });
 }

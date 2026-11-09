@@ -210,6 +210,71 @@ a hypothetical concern.
 
 ---
 
+## 13. (TASK_201) Multi-variant EXE = a TRIM, not a theme — a nav-set filter is NOT access control
+
+The Mailer EXE shipped correct nav (Campaigns + Settings only) yet still leaked
+the web experience in ways the nav set never governed. A `BUILD_ALLOWED_HREFS`
+narrowing only hides dock/menu entries; it does not stop the user REACHING a
+page by another path. The mailer build leaked in **three** independent places,
+all fixed together (S10) — treat this triad as the pattern for any future
+"subset build":
+
+- **The hardcoded logo link.** `components/shell.tsx`'s "SpaceWorker OS" brand
+  link was a hardcoded `<Link href="/dashboard">`. Clicking the top-left logo
+  in the mailer dropped the user onto the web Overview page. Any global/"go
+  home" affordance must derive its target from `buildTarget`, not a literal.
+- **The page itself was still reachable.** `/dashboard` renders the wallet /
+  AI / lead stats and a web-centric hero ("Welcome back to SpaceWorker OS …
+  find leads, send outreach") — none of which is true for a mailer-only build,
+  and its numbers are DB/embedded-backed (no `DATABASE_URL` in the EXE). Even
+  with nav hidden, a direct URL, a stale bookmark, or the old logo link reached
+  it. Fix: `app/dashboard/page.tsx` now `router.replace("/dashboard/campaigns")`
+  and `return null` for `buildTarget === "mailer"` **before** rendering anything.
+- **The landing route was hardcoded in the Rust launcher (S9).**
+  `src-tauri/src/main.rs` navigated every build to `/dashboard/extract`, so the
+  mailer opened on the EXTRACTOR screen with a Mailer title — a live bug a
+  customer reproduced on a clean PC. Fix: `landing_route(identifier)` keyed off
+  the tauri `identifier`, fail-closed to the extractor route.
+
+**Lesson:** when a build is a genuine subset, enumerate EVERY route/entry the
+excluded set can still be reached through — nav filter, global links, the OS
+launcher's initial URL, and the route's own page — and close each. Missing one
+is exactly how "nav is correct" ships a broken window.
+
+## 14. (TASK_201) Verify against the SHIPPED build, not the source or the local dev server
+
+Every S9 claim that turned out wrong this cycle ("it's old app state", "the
+route must be missing") was falsified only by probing the **installed** runtime
+on the target box: the compiled server chunk read `BUILD_TARGET=mailer`
+correctly, the gate said Mailer, the nav set was right — and the window STILL
+opened on Extract, because the defect lived in the Rust launcher, a layer that
+none of the source-level checks exercise. Trust the artifact (see §6/§11) over
+any "it should work" reasoning, and probe the thing the user actually runs.
+
+## 15. (TASK_201) A marketing domain is not the same host as the validation API
+
+The "Get a license on the website →" link now points at
+`https://spaceworker.instaweb.top` (S10). It lives as its own constant
+(`LICENSE_PURCHASE_URL` in `lib/exe-runtime.ts`), deliberately **separate** from
+`HOSTED_APP_URL`. `HOSTED_APP_URL` is ALSO the host of `/api/exe-license/*`
+(trial-ping, eligibility) and the billing routes via `lib/hosted-fetch.ts` —
+repointing that to a marketing domain would silently break activation and
+checkout. When a URL serves both a human-facing page and a machine API, split
+the constants; never conflate "where the user buys" with "where the app calls
+out to."
+
+## 16. (TASK_201) Per-variant state must be isolated or the next build inherits it
+
+The Devices (TASK_190) and Mailer (TASK_201) build cycles each needed the
+license secret baked in per variant and warned that NEXT_PHASE / build-time
+`process.env` can bleed across variants if the assembler or the CI arm doesn't
+reset it. `scripts/runtime-assemble.mjs` writes `BUILD_TARGET` and scrubs `.env`
+fail-closed; the CI `variant` switch must set the per-variant tauri `--config`
+AND the runtime env for that arm only. For any new variant, confirm the previous
+variant's build-time state cannot leak in before shipping.
+
+---
+
 ## Checklist for the next EXE build (Vantra, or a SpaceWorker mailer/combined/
 automation variant)
 
@@ -233,3 +298,14 @@ automation variant)
       infrastructure vs. a public repo/release), not defaulted into.
 - [ ] Any shared parser/export logic reused across variants has been
       round-trip tested, not just unit-tested in isolation.
+- [ ] If the variant is a SUBSET build (fewer pages/features than the web app),
+      every route to an excluded page is closed, not just the nav filter:
+      `BUILD_ALLOWED_HREFS` (dock/menu), the shell logo/"go home" link, the
+      Tauri launcher's initial URL (`landing_route`), AND the excluded page's
+      own fail-closed redirect for direct URLs / stale bookmarks (§13).
+- [ ] Any host used for both a human page and a machine API has SEPARATE
+      constants (e.g. `LICENSE_PURCHASE_URL` vs `HOSTED_APP_URL`) so repointing
+      one can't break the other (§15).
+- [ ] The fix has been verified against the SHIPPED artifact on the target OS,
+      not just the source or local dev server — especially anything in the Rust
+      launcher that source-level checks never exercise (§14).

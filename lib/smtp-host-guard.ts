@@ -125,9 +125,24 @@ function v4IsNonRoutable(addr: string): boolean {
   return false;
 }
 
+/** Extract the embedded IPv4 from an IPv4-mapped IPv6 ("::ffff:a.b.c.d"). */
+function v4FromMappedV6(addr: string): string | null {
+  const m = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(addr.trim());
+  return m && isLiteralIPv4(m[1]) ? m[1] : null;
+}
+
 /** True when an IPv6 address is loopback/link-local/ULA/multicast. */
 function v6IsNonRoutable(addr: string): boolean {
   const clean = addr.toLowerCase().split("%")[0]; // strip any zone index
+  // IPv4-mapped IPv6 ("::ffff:172.65.255.143") — some resolvers hand these
+  // back even for an A-record lookup. The embedded address is the real
+  // routability question; judge it by the v4 rules. Without this, "ffff" reads
+  // as the first hextet of the multicast range and EVERY mapped address —
+  // including ordinary public SMTP hosts — was rejected (caught live adding a
+  // mailbox inside the mailer EXE; would hit any user whose resolver behaves
+  // the same way).
+  const mapped = v4FromMappedV6(clean);
+  if (mapped) return v4IsNonRoutable(mapped);
   if (clean === "::" || clean === "::1") return true; // unspecified / loopback
   let firstHex: string;
   if (clean.startsWith("::")) {

@@ -6,7 +6,7 @@ import { PresenceBeacon } from "@/components/presence-beacon";
 import { Shell } from "@/components/shell";
 import { WrapperModeProvider } from "@/components/wrapper-mode-context";
 import { exeBuildTarget } from "@/lib/exe-build-target";
-import { accountHref, isLocalExeRuntime } from "@/lib/exe-runtime";
+import { isLocalExeRuntime, LICENSE_PURCHASE_URL } from "@/lib/exe-runtime";
 import { resolveWrapperMode } from "@/lib/wrapper-mode";
 
 export default async function DashboardLayout({
@@ -66,7 +66,7 @@ export default async function DashboardLayout({
           {wrapper ? (
             <Shell buildTarget={undefined}>{children}</Shell>
           ) : (
-            <LicenseGate build={build} buyHref={accountHref("/pricing")}>
+            <LicenseGate build={build} buyHref={LICENSE_PURCHASE_URL}>
               {/* TASK_181 — a wrapper build takes the server-bound shell: NO
                   buildTarget on <Shell>, so the wallet chip, Sign out, support
                   and agent all stay (owner: top bar "as-is"). buildTarget on

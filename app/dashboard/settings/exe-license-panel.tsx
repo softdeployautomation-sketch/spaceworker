@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { Badge, Card, Spinner } from "@/components/ui";
 import { LicenseActivationForm } from "@/components/license-activation-form";
+import { openExternalUrl } from "@/lib/open-external";
 
 // EXE-only License panel for the Settings page (Task 27 Part B). Shown only when
 // the app runs as a desktop build (isLocalExeRuntime — gated in the server page);
@@ -148,7 +149,12 @@ export function ExeLicensePanel({ buyHref }: { buyHref: string }) {
               actionSlot={
                 <a
                   href={buyHref}
-                  target="_blank"
+                  onClick={(e) => {
+                    // <a target="_blank"> no-ops in the desktop EXE's WebView2 —
+                    // route through the shell-aware opener (see license-gate.tsx).
+                    e.preventDefault();
+                    void openExternalUrl(buyHref);
+                  }}
                   rel="noreferrer"
                   className="text-sm font-medium text-brand-600 hover:text-brand-700 hover:underline"
                 >
@@ -174,7 +180,10 @@ export function ExeLicensePanel({ buyHref }: { buyHref: string }) {
               actionSlot={
                 <a
                   href={buyHref}
-                  target="_blank"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    void openExternalUrl(buyHref);
+                  }}
                   rel="noreferrer"
                   className="text-sm font-medium text-brand-600 hover:text-brand-700 hover:underline"
                 >
