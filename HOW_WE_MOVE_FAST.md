@@ -4,21 +4,205 @@
 
 ## 0. Access — read this first
 
-- **VPS** (164.68.105.96 — runs both `spaceworker.service` and the sibling `vantra.service`): `ssh -i ~/.ssh/tacticalrmm_vps root@164.68.105.96`. That key file already exists on this machine — reference it by path, never copy/print its contents into a script, log, or committed file.
+- **VPS** (**207.244.224.57** since the 2026-11-04 rebuild — runs `spaceworker.service`, the sibling `vantra.service`, `nats`/`nats-api`, and `meshcentral`): `ssh -i ~/.ssh/tacticalrmm_vps -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@207.244.224.57`. That key file already exists on this machine — reference it by path, never copy/print its contents into a script, log, or committed file. The old host `164.68.105.96` is dead — any deploy script that still targets it must be fixed before use (§0a).
 - **Windows VM** (for EXE install/testing only — not needed for a pure backend/web task): `ssh -i ~/.ssh/tacticalrmm_vps myrat@192.168.0.104`. Same key. The VM's IP can change on restart — if that address stops responding, ask rather than guessing a new one.
 - **GitHub**: this machine's `git` and `gh` are already authenticated (both `git push origin main` and `gh workflow run` / `gh run download` work directly, no separate login step). Push directly from a normal commit — don't invent a different auth method.
 - **The VPS has NO git repository at all** — `/opt/spaceworker` (and `/opt/vantra`) are plain rsync'd file copies, not `git clone`s. `git status`/`git log`/`git rev-parse` etc. will always fail there with "not a git repository" — that's expected, not a sign anything is broken. Verify a deploy landed correctly by checking file contents/timestamps directly (`grep`, `cat -n`, `ls -la`) or by running the app itself (`systemctl status`, `curl`, an E2E script per §4) — never by trying `git log` on the server. All real git history lives only in the local checkout this repo is cloned from, and on GitHub after a push.
+
+## 0a. The 2026-11-04 rebuild — new server, RMM semantics, NATS, and what to check first
+
+The box was rebuilt on a new provider. **`207.244.224.57` is the only live host** (old
+`164.68.105.96` is gone). DNS was cut over: app, agent, mail, mesh, and Vantra hostnames
+all resolve to the new IP. Everything below was verified live on 2026-11-04.
+
+**What runs where (new box):**
+
+| Unit / path | Role |
+|---|---|
+| `spaceworker.service` | Next app, `next start -p 3500`, `User=trmm`, `WorkingDirectory=/opt/spaceworker` |
+| `vantra.service` | Vantra/MeshCentral-derived RMM API, `User=vantra`, `127.0.0.1:3300` |
+| `nats.service` | `nats-server -c /rmm/api/tacticalrmm/nats-rmm.conf` (ports 4222 + 9235), `User=deploy` |
+| `nats-api.service` | TRMM NATS API account — must share the same key as TRMM |
+| `meshcentral` | `wss://mesh.instaweb.top` — remote-control transport only (see below) |
+| `/rmm/api/tacticalrmm` | TacticalRMM source + `manage.py`. Venv: `/rmm/api/env/bin/python`. **`manage.py` is here, not `/rmm/api/manage.py`.** |
+| Postgres | separate DBs: `spaceworker`, `vantra`, `tacticalrmm`, `meshcentral` |
+
+**Env rule:** **never `source /opt/spaceworker/.env`** — it is not shell-safe (a value
+containing `seed` fails the whole source). Read single values instead:
+`grep -m1 '^KEY=' /opt/spaceworker/.env | cut -d= -f2-`. Same for `/opt/vantra/.env`.
+
+**NATS auth (fixed 2026-11-04 — this was the reason agents could not register):**
+`nats-rmm.conf` derives its credentials from TRMM, so it must be regenerated from Django,
+never hand-edited:
+- Account `TRMM` password = Django `SECRET_KEY`.
+- Account `AGENTS` has one user per agent: username = TRMM `agent_id`, password = that
+  agent's `auth_token.key`.
+- `nats-api.conf` `key` must also equal `SECRET_KEY`.
+
+Regenerate only via Django (a bare script dies with `AppRegistryNotReady`):
+```bash
+cd /rmm/api/tacticalrmm && /rmm/api/env/bin/python -c \
+  'import os,django; os.environ.setdefault("DJANGO_SETTINGS_MODULE","tacticalrmm.settings");
+   django.setup(); from tacticalrmm.utils import reload_nats; reload_nats(); print("ok")'
+systemctl is-active nats nats-api
+```
+Verify the TRMM side actually authenticates before blaming an agent:
+```bash
+cd /rmm/api/tacticalrmm && /rmm/api/env/bin/python - <<'PY'
+import os, django, asyncio
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "tacticalrmm.settings")
+django.setup()
+from tacticalrmm.helpers import setup_nats_options
+import nats
+
+async def main():
+    nc = await nats.connect(**setup_nats_options())
+    print("nats ok")
+    await nc.close()
+
+asyncio.run(main())
+PY
+```
+
+**⚠️ Who decides "online" — TRMM, not Mesh.** This is the single most confusing thing on
+this stack:
+- SpaceWorker's device `status` / `lastSeenAt` comes **only** from TRMM, via Vantra's
+  `/api/internal/sw/devices` → `listAgents(trmmClientId)` → `a.status === "online"` and
+  `lastSeen = a.last_seen` (`/opt/vantra/app/api/internal/sw/devices/route.ts`). The UI
+  mirrors that flag on `device-status-sweep`.
+- **MeshCentral is never consulted for online/offline.** It is only the remote-control
+  transport (screen, terminal, runcommand).
+- Therefore: UI says offline ⇒ debug the **TRMM agent** (`natsws` connections, agent
+  service on the Windows box). Do not chase Mesh. A sleeping laptop can still answer
+  `ping` (Modern Standby) while both agents are suspended — that is *expected*, not a
+  broken agent. On wake the TRMM agent reconnects to `/natsws`, checks in, and the next
+  sweep flips the UI online. No manual action needed.
+- If you do need to run something on a Windows box, use MeshCentral directly; `ping`
+  proves nothing about agent health.
+
+**meshctrl works with `--loginkey`** (it does **not** accept `--token` or the hex key as
+`--loginpass`):
+```bash
+MESH_KEY=$(grep -m1 '^MESH_LOGIN_KEY=' /opt/vantra/.env | cut -d= -f2-)
+MESH_USER=$(grep -m1 '^MESH_LOGIN_USER=' /opt/vantra/.env | cut -d= -f2-)
+node /meshcentral/node_modules/meshcentral/meshctrl.js \
+  --url wss://mesh.instaweb.top --loginuser "$MESH_USER" --loginkey "$MESH_KEY" \
+  DeviceInfo --id 'node//<nodeid>'
+# RunCommand --id ... --run 'sc query tacticalagent' --type 1
+# DevicePower --id ... --wake
+```
+`Agent not connected` means the box is offline — there is nothing to restart remotely;
+wait for it or ask the owner to wake it. Do not retry in a loop.
+
+**Known noise, not ours:** an unknown TRMM agent id `GztDJIaAivMRDKEzJeeAOqsUNQgMAIkrSBTouamC`
+from `107.178.105.100` (IOFLOOD) retries NATS auth every ~5s. It is not in
+`agents_agent` or `accounts_user` and is not one of the owner's machines. Ignore it (or
+firewall the IP); it is not a symptom of the NATS fix.
+
+**⚠️ TRMM org→client mapping can break after a DB restore.** The `tacticalrmm` DB is a
+Sept-15 snapshot (clients ≤11) while Vantra's orgs point at client ids 42–55 from the
+old server. If a device shows offline but `listAgents()` has it, check the org's
+`trmmClientId` first:
+```bash
+# What the org actually points at, and whether anything lives there:
+curl -s -H "X-API-KEY: $(grep -m1 '^TRMM_API_KEY=' /opt/vantra/.env | cut -d= -f2-)" \
+  "https://api.instaweb.top/agents/?client=<org.trmmClientId>"
+```
+Empty `[]` ⇒ mapping is stale. Fix by provisioning a dedicated client+site for the org
+(reuse Vantra's own flow: `POST /clients/ {client:{name},site:{name}}`, then
+`PUT /agents/<id>/ {site:<newSiteId>}`, then set the org's `trmmClientId`/`trmmSiteId`)
+— never point two owners at a shared client, or `syncDevices` will import their agents
+into each other's account. Wilk's private org was remapped this way on 2026-11-04
+(client **12** / site **58**); the full chain was proven by simulating a heartbeat:
+`last_seen=now()` → Vantra `online:true` → SpaceWorker Device row `online`. The real
+heartbeat is written by the Go `nats-api` service (`UPDATE agents_agent SET
+last_seen=$1, version=$2`), so no app restart is involved. Because the Sept-15 snapshot
+lost the true value, `last_seen` was seeded to the **last confirmed contact from the
+nginx access log**, `2026-11-04 01:00:01 +01`, so the UI shows hours rather than 49 days
+until the first real heartbeat overwrites it. Never seed from "now" — that makes a
+sleeping machine look online.
+
+**`nats-api` DB grant is not restored by a TRMM dump.** The service connects as
+`sbgsdrhz`; a restored `agents_agent` can be owned by `smytivvn` with no ACL, so every
+heartbeat logs `pq: permission denied for table agents_agent` even though NATS and the
+agent are healthy. Check and fix:
+```bash
+sudo -u postgres psql -d tacticalrmm -Atc \
+  "select has_table_privilege('sbgsdrhz','agents_agent','SELECT'), has_table_privilege('sbgsdrhz','agents_agent','UPDATE');"
+# f|f  ⇒
+sudo -u postgres psql -d tacticalrmm -c "GRANT SELECT, UPDATE ON agents_agent TO sbgsdrhz;"
+systemctl restart nats-api
+```
+Re-check the grant after any `tacticalrmm` restore. Wilk flipped online at 14:14:09 on
+2026-11-04 immediately after this fix.
+
+**`mesh.spaceworker.top` is a second MeshCentral vhost, not a DNS-only alias.**
+SpaceWorker rewrites the Mesh URL to `https://mesh.spaceworker.top`, but after the
+rebuild only `mesh.instaweb.top` had an nginx block — DNS resolved but nginx served the
+default `broks.beauty` cert (curl `000`/400). Both hosts must proxy to
+`http://127.0.0.1:4430` with the `spaceworker.top` cert. MeshCentral also validates the
+WebSocket `Origin` against `settings.cert` (`mesh.instaweb.top`), so the fix has two
+halves:
+```json
+// /meshcentral/meshcentral-data/config.json — domains[""]
+"allowedorigin": ["mesh.instaweb.top", "mesh.spaceworker.top"]
+```
+```bash
+systemctl restart meshcentral
+# verify the origin check, not just the page:
+# WebSocket to wss://mesh.spaceworker.top/control.ashx?auth=<token>
+#   with Origin: https://mesh.spaceworker.top must return serverinfo/userinfo.
+```
+Without `allowedorigin`, the page loads but remote control shows
+`Invalid origin in HTTP request, click to reconnect`.
+
+**Public Everwas install command output:** the generator now prints
+`Downloading…`/`Installing…`, requires an elevated PowerShell, checks the installer
+exit code, and writes `%TEMP%\everwas-install.log`. A silent run that leaves no
+`C:\Program Files\Everwas\Agent` and no temp `everwas-agent.exe` means the command was
+never executed (wrong console / non-elevated / multi-line paste into a one-line box),
+not that the agent rejected it. Wilk’s public Everwas agent was installed successfully
+on 2026-11-04 and appears as a second public device alongside the private TRMM one.
+
+**psql traps on this box:** quote every camelCase column (`"removedAt"`,
+`"vantraAgentId"`, `"updatedAt"`) — unquoted folds to lowercase and errors. Device rows
+live in DB `spaceworker`; TRMM agent rows live in DB `tacticalrmm`; the two cannot be
+joined in one query — cross-check by exporting ids. Put multi-statement SQL in a local
+file and `scp` it, rather than nesting quotes through ssh.
+
+**Windows device delete path (2026-11-04 fix):** SpaceWorker `removeDevice`
+(`lib/vantra-link.ts`) calls Vantra
+`POST /api/internal/sw/devices/<agentId>/action {action:"delete"}`. A `vantra_404`
+(agent already gone) now falls through to the local soft-delete; `vantra_503` still
+maps to `agent_offline`. So an orphaned Device row can be removed instead of getting
+stuck on "vantra device not found".
+
+**Deploy warning:** `.github/workflows/deploy.yml` and `scripts/deploy-vps.sh` still
+default to `164.68.105.96`. Override the host explicitly:
+`VPS_HOST=root@207.244.224.57 SSH_KEY=~/.ssh/tacticalrmm_vps scripts/deploy-vps.sh <list>`.
+BatchMode preflight also needs the host key in `known_hosts` (`ssh-keyscan -H
+207.244.224.57 >> ~/.ssh/known_hosts`); earlier `/dev/null` uses do not persist it.
+The wrapper aborts if `/opt/spaceworker/static/maintenance.html` is missing — restore it
+from `deploy/maintenance.html` before deploying. Deploy by tar/rsync to the new host,
+then rebuild as the owning user (`trmm` for SpaceWorker, `vantra` for Vantra).
+
+**10-second health snapshot:**
+```bash
+systemctl is-active spaceworker vantra nats nats-api
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:3500/
+systemctl --failed
+```
 
 ## 1. The repo root vs. `app/` trap (bit us twice — don't repeat it)
 
 On the VPS, `/opt/spaceworker/` is the **repo root** — `app/`, `components/`, `lib/`, `prisma/` all live directly under it. `/opt/spaceworker/app/` is the Next.js **router directory** (`app/api/...`, `app/dashboard/...`), NOT a second copy of the repo.
 
-- **rsync destination**: always `root@164.68.105.96:/opt/spaceworker/` (trailing slash, repo root) with an explicit `--files-from` list of repo-relative paths (e.g. `app/api/exe-license/auto-bind/route.ts`, `lib/products.ts`). Never a bare directory sync, never a relative `..` in the remote target — a `..`-containing remote path once resolved to the wrong directory and overwrote the real landing page mid-session. If a path needs `..`, stop and rewrite it as an absolute path instead.
+- **rsync destination**: always `root@207.244.224.57:/opt/spaceworker/` (trailing slash, repo root) with an explicit `--files-from` list of repo-relative paths (e.g. `app/api/exe-license/auto-bind/route.ts`, `lib/products.ts`). Never a bare directory sync, never a relative `..` in the remote target — a `..`-containing remote path once resolved to the wrong directory and overwrote the real landing page mid-session. If a path needs `..`, stop and rewrite it as an absolute path instead.
 - **This workstation's `rsync` is 2.6.9 (macOS bundled) and is not trustworthy for trees.** `rsync --version` confirms it; there is no newer one on PATH (checked 2026-10-04). Simple workaround for everything in the bullet above: **ship with tar over ssh** — it sidesteps the under-recursion bug and the directory-entry trap entirely, and preserves relative paths untouched:
   ```bash
   printf 'lib/hosting/domains.ts\napp/api/hosting/domains/route.ts\n' > /tmp/files.txt
   tar czf /tmp/ship.tar.gz -T /tmp/files.txt
-  cat /tmp/ship.tar.gz | ssh -i ~/.ssh/tacticalrmm_vps root@164.68.105.96 \
+  cat /tmp/ship.tar.gz | ssh -i ~/.ssh/tacticalrmm_vps root@207.244.224.57 \
     'tar xzf - -C /opt/spaceworker && chown -R trmm:trmm /opt/spaceworker'
   ```
   Verify by **comparing hashes on both ends** (`md5 -q` locally, `md5sum` remotely) — never by trusting the transfer's exit code, and never with `git log` (no git on the VPS — §0).
@@ -126,9 +310,9 @@ file-dropper):
 # sync of that tree.
 for d in app lib components tests prisma; do
   rsync -azr --exclude='.env' -e "ssh -i ~/.ssh/tacticalrmm_vps" \
-    "$d/" "root@164.68.105.96:/opt/spaceworker/$d/"
+    "$d/" "root@207.244.224.57:/opt/spaceworker/$d/"
 done
-ssh -i ~/.ssh/tacticalrmm_vps root@164.68.105.96 \
+ssh -i ~/.ssh/tacticalrmm_vps root@207.244.224.57 \
   'chown -R trmm:trmm /opt/spaceworker'
 ```
 
@@ -188,9 +372,9 @@ app/api/exe-license/auto-bind/route.ts
 lib/products.ts
 # ...one repo-relative path per line
 EOF
-rsync -avz -e "ssh -i ~/.ssh/tacticalrmm_vps" --files-from=/tmp/deploy-files.txt --exclude='.env' ./ root@164.68.105.96:/opt/spaceworker/
+rsync -avz -e "ssh -i ~/.ssh/tacticalrmm_vps" --files-from=/tmp/deploy-files.txt --exclude='.env' ./ root@207.244.224.57:/opt/spaceworker/
 
-ssh -i ~/.ssh/tacticalrmm_vps root@164.68.105.96 \
+ssh -i ~/.ssh/tacticalrmm_vps root@207.244.224.57 \
   "cd /opt/spaceworker && sudo -u trmm npm run build 2>&1 | tail -20 \
    && systemctl restart spaceworker.service && sleep 3 \
    && systemctl is-active spaceworker.service \
@@ -216,7 +400,7 @@ find app lib components -type f \( -name '*.ts' -o -name '*.tsx' \) -exec md5 -r
 md5 -r next.config.ts proxy.ts >> /tmp/local.txt
 awk '{print $2, $1}' /tmp/local.txt | sort > /tmp/local-norm.txt
 
-ssh -i ~/.ssh/tacticalrmm_vps root@164.68.105.96 \
+ssh -i ~/.ssh/tacticalrmm_vps root@207.244.224.57 \
   "cd /opt/spaceworker && find app lib components -type f \( -name '*.ts' -o -name '*.tsx' \) -exec md5sum {} \; ; md5sum next.config.ts proxy.ts" \
   > /tmp/remote.txt
 awk '{print $2, $1}' /tmp/remote.txt | sed 's|^/opt/spaceworker/||' | sort > /tmp/remote-norm.txt
@@ -901,8 +1085,16 @@ Added 2026-09-28 (relay/DKIM bring-up — the fix that "worked" was a no-op twic
   (b) have the domain owner publish `sw._domainkey` once. Never present "signed" as
   "will authenticate": the coverage verdict must say whether the key is PUBLISHED
   and whether it is OURS.
-
-
+- **2026-11-04 (server rebuild): offline in the SpaceWorker UI is a TRMM fact, not a
+  Mesh one.** The row's `status`/`lastSeenAt` is written by `syncDevices` from
+  Vantra's `listAgents(trmmClientId)` (`a.status === "online"`, `lastSeen = a.last_seen`);
+  MeshCentral is not queried for status at all. A machine that answers `ping` but shows
+  offline is usually asleep (Modern Standby) with both agents suspended — wait for wake,
+  do not "repair" Mesh. This session's NATS auth failure looked identical to an agent
+  outage but was fixed entirely server-side (TRMM password = `SECRET_KEY`, AGENTS users =
+  per-agent `auth_token.key`, regenerated only through `reload_nats()` after
+  `django.setup()`). Also: `meshctrl` needs `--loginkey` (not `--token`/`--loginpass`),
+  and never `source` the `.env` files (`grep -m1 '^KEY=' … | cut -d= -f2-` instead).
 
 
 ## 6b. Post-migration drift check — run this after EVERY `migrate deploy`
