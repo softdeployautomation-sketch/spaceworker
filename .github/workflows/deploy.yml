@@ -333,7 +333,7 @@ jobs:
             chown -R trmm:trmm /opt/spaceworker
             rm -f /tmp/spaceworker-ci-deploy.tar.gz
             # Sync nginx vhost so /downloads/ serves EXEs directly from public/
-            cp deploy/nginx-spaceworker.conf /etc/nginx/sites-available/spaceworker.top
+            cp deploy/nginx-spaceworker.conf /etc/nginx/sites-available/spaceworker.top.conf
             nginx -t && systemctl reload nginx
             npm rebuild || true
             # Recover from a previously FAILED migration: Prisma blocks all new
