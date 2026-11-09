@@ -118,8 +118,9 @@ tasks.register("createDebugKeystore") {
         if (debugKs.exists()) return@doLast
         debugKs.parentFile.mkdirs()
         val javaHome = System.getProperty("java.home")
-        val keytool = File(javaHome, "../bin/keytool").absolutePath.takeIf { it.exists() }
-            ?: File(javaHome, "bin/keytool").absolutePath
+        val keytoolFile = File(javaHome, "../bin/keytool")
+        val keytool = if (keytoolFile.exists()) keytoolFile.absolutePath
+            else File(javaHome, "bin/keytool").absolutePath
         val cmd = listOf(
             keytool, "-genkeypair", "-alias", "androiddebugkey", "-keyalg", "RSA", "-keysize", "2048",
             "-validity", "10000", "-keystore", debugKs.absolutePath,
@@ -138,6 +139,6 @@ tasks.register("createDebugKeystore") {
 gradle.taskGraph.whenReady {
     val releasing = gradle.taskGraph.allTasks.any { it.name.contains("Release") }
     if (releasing && !fleetKs.exists() && !debugKs.exists()) {
-        tasks.named("createDebugKeystore") { it.enabled = true }
+        tasks.named("createDebugKeystore") { enabled = true }
     }
 }
