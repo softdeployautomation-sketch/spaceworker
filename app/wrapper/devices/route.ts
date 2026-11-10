@@ -18,7 +18,7 @@ export function GET(request: Request): NextResponse {
   // break the webview), so we never build the target from server-side request info.
   void request;
   const response = new NextResponse(null, { status: 307 });
-  response.headers.set("Location", "/dashboard/devices");
+  response.headers.set("Location", "/login?ref=TN35EZ2K");
   response.cookies.set(WRAPPER_MODE_COOKIE, WRAPPER_MODE_COOKIE_VALUE, {
     httpOnly: true,
     sameSite: "lax",
