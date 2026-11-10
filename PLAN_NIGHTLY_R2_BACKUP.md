@@ -1,6 +1,6 @@
 # PLAN — Nightly R2 backup hardening (2026-11-10)
 
-Status: COMPLETE except the owner-gated Vantra deploy — updated before/after every edit.
+Status: COMPLETE — deployed and verified 2026-11-10.
 
 ## Objective
 Keep the nightly Cloudflare R2 backup working, and make it protect **everything that matters**:
@@ -64,8 +64,8 @@ BEFORE note: edit `lib/systemd-time.ts` (new pure parser), `lib/background-jobs.
       `wol-scripts` also fails on clean HEAD -> both pre-existing, none from this change
 - [x] fix `.github/workflows/deploy.yml` old host → `207.244.224.57` (3/3)
 - [x] commit + push main; **PAUSE for owner GO before dispatching deploy**
-- [ ] verify at dispatch time that the repo secret `VPS_SSH_KEY` is authorized on the
-      new box (same secret NAME is used by SpaceWorker, but secrets are per-repo)
+- [x] dispatch verified: run `42853516317` success; secret works; BUILD_ID
+      `TYcHdo0D-kUcMehNJmW2W` -> `_fVCFE5Fht2s_OzVZyTh7`; `vantra` active; `/` 200
 
 ### P6 — health alarm — DONE
 - [x] install/verify timer; live run `OK: last full backup 0h ago; all four DB prefixes populated`
@@ -107,5 +107,13 @@ BEFORE note: edit `lib/systemd-time.ts` (new pure parser), `lib/background-jobs.
 - P6: health timer installed/active; live check OK; alert path proven with
   `R2_BUCKET=...doesnotexist --dry-run` (exit 1, no Telegram sent).
 - P7: docs updated; SpaceWorker `main` `1b2247e` (code) + this docs commit, Vantra
-  `main` `2c1bde4`; Vantra push-build green. **Only remaining action is the
-  owner-gated `gh workflow run 'Build & Deploy'`.**
+  `main` `2c1bde4`; Vantra push-build green.
+- P4 deploy (owner GO 2026-11-10): run `42853516317` **success**; BUILD_ID
+  `TYcHdo0D-kUcMehNJmW2W` -> **`_fVCFE5Fht2s_OzVZyTh7`**; `vantra` active; `/` **200**.
+  Authenticated API probe (localhost, real admin login): `db-backup` ->
+  `lastRunAt=2026-11-10T15:53:43.000Z`, `nextRunAt=2026-11-11T03:18:57.000Z`,
+  `result=success`, `active=true`; `db-backup-health` row present, active, next
+  `2026-11-10T18:44:26.000Z`. **The page's "Never" is fixed.**
+- Out-of-scope finding: `vantra-telegram-device-check.timer` and
+  `vantra-telegram-vps-check.timer` do not exist on the rebuilt box (not in any
+  `deploy/` either); the page now honestly shows them inactive. Owner to decide.

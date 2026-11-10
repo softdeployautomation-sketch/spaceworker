@@ -19,8 +19,8 @@ scoped-mint code, that's the owner's GO being executed.
 
 **2026-11-10 update:** SpaceWorker `main` = **`1b2247e`** (backup hardening, units +
 scripts in `deploy/`) · Vantra `main` = **`2c1bde4`** (systemd timestamp parse fix +
-deploy host → `207.244.224.57`; push-build green, **deploy NOT dispatched yet — owner
-GO required**). Vantra's local tree also carries unrelated uncommitted owner files; do
+deploy host → `207.244.224.57`; **deployed** run `42853516317`, BUILD_ID
+**`_fVCFE5Fht2s_OzVZyTh7`**). Vantra's local tree also carries unrelated uncommitted owner files; do
 not treat those as shipped.
 
 ## Regression pins that must stay true (each was a shipped fix — verify by probe, not memory)

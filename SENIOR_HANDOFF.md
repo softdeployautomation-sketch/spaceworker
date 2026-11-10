@@ -514,8 +514,11 @@ all 7 parts uploaded, `gzip -t` clean, and a restore drill re-created **29/97/66
 tables for vantra/spaceworker/tacticalrmm/meshcentral in scratch DBs (then dropped).
 The page's "last run: Never" was `Date.parse("Tue … CET")` = **NaN** on Node 24 →
 `null`; Vantra `main` @ **`2c1bde4`** parses with `TZ=UTC` (`lib/systemd-time.ts`) and
-repoints its deploy workflow at `207.244.224.57` (push-build green). **Deploy not
-dispatched — awaiting owner GO.** Verify commands: `HOW_WE_MOVE_FAST.md` §0a.
+repoints its deploy workflow at `207.244.224.57`. **Deployed 2026-11-10** (run
+`42853516317` success): BUILD_ID `TYcHdo0D-kUcMehNJmW2W` → `_fVCFE5Fht2s_OzVZyTh7`,
+service active, site 200, authenticated API now returns
+`db-backup lastRunAt=2026-11-10T15:53:43.000Z` / `next=2026-11-11T03:18:57.000Z`.
+Verify commands: `HOW_WE_MOVE_FAST.md` §0a.
 
 **Last verified: 2026-10-09 (TASK_187 payment-alert email + support notifications +
 support invoice composer — INDEPENDENT VERIFIER PASS, `PROMPT_VERIFY_TASK_187.md`).**
@@ -2402,3 +2405,17 @@ four; do not claim live rendering.
   one key (`tacticalrmm-vps`). SpaceWorker's CI uses the same secret NAME successfully.
   If Vantra's `VPS_SSH_KEY` is stale the dispatch fails at auth before any box change
   (safe), and the secret must be updated.
+
+### 2026-11-10 (later) — Vantra deploy executed + admin page verified
+- Owner GO received. `gh workflow run 'Build & Deploy'` → run **`42853516317`** success
+  (build + deploy). BUILD_ID **`_fVCFE5Fht2s_OzVZyTh7`** (was `TYcHdo0D-kUcMehNJmW2W`),
+  `vantra` active, `https://vantra.spaceworker.top/` **200**.
+- Authenticated probe of `/api/admin/background-jobs` (real admin login over
+  localhost, secret never printed): `db-backup` `lastRunAt=2026-11-10T15:53:43.000Z`,
+  `nextRunAt=2026-11-11T03:18:57.000Z`, `result=success`, `active=true`;
+  `db-backup-health` row present/active (first run 18:44 UTC); dispatcher shows a real
+  last-run. The "Never" bug is gone in production.
+- **New out-of-scope finding:** `vantra-telegram-device-check.timer` and
+  `vantra-telegram-vps-check.timer` do not exist on the rebuilt box or in any
+  `deploy/` dir — those two Telegram checks are not scheduled. Owner decision needed
+  before recreating them.
