@@ -1,0 +1,10 @@
+[Unit]
+Description=Check R2 backup freshness every 6 hours
+
+[Timer]
+OnCalendar=*-*-* 00/6:42:00 UTC
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

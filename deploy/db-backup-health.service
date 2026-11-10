@@ -1,0 +1,10 @@
+[Unit]
+Description=Alert when the nightly R2 backup is stale
+Documentation=file:/opt/spaceworker/deploy/backup-health.sh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/instaweb-backup.env
+ExecStart=/opt/spaceworker/deploy/backup-health.sh 36

@@ -1,0 +1,12 @@
+[Unit]
+Description=Nightly Postgres + config backup to Cloudflare R2
+Documentation=file:/opt/spaceworker/deploy/backup-databases.sh
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/instaweb-backup.env
+ExecStart=/opt/spaceworker/deploy/backup-databases.sh
+Nice=10
+IOSchedulingClass=best-effort
