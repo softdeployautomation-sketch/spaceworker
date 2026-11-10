@@ -27,6 +27,46 @@ all resolve to the new IP. Everything below was verified live on 2026-11-04.
 | `/rmm/api/tacticalrmm` | TacticalRMM source + `manage.py`. Venv: `/rmm/api/env/bin/python`. **`manage.py` is here, not `/rmm/api/manage.py`.** |
 | Postgres | separate DBs: `spaceworker`, `vantra`, `tacticalrmm`, `meshcentral` |
 
+
+**Nightly backup (rewritten 2026-11-10 — four DBs, not two).** Source of truth is the
+repo: `deploy/backup-databases.sh` + `deploy/db-backup.{service,timer}` +
+`deploy/backup-health.{service,timer}` (the normal deploy installs every unit in
+`deploy/`; never edit a box-only copy). Runs **03:17 UTC** and covers, in one pass:
+- dumps of **`spaceworker`**, **`vantra`**, **`tacticalrmm`** (agents/devices) and
+  **`meshcentral`** (mesh nodes/groups + cookie key);
+- Postgres **globals** (`pg_dumpall --globals-only`; a DB dump alone cannot restore roles);
+- critical **config/secrets** (`/opt/*/.env`, TRMM `local_settings.py` + NATS confs,
+  MeshCentral `config.json`/certs/`serverstate.txt`, nginx, our units, `/etc/letsencrypt`);
+- small user data (`hosted-sites`, `cyberlab-contexts`, `cyberlab-sessions`).
+
+Excluded on purpose: `/var/spaceworker/screenshots` (large + sensitive) and
+installers/build artefacts (reproducible). Destination: R2 bucket `instaweb-db-backups`,
+prefixes `spaceworker/ vantra/ tacticalrmm/ meshcentral/ globals/ config/
+spaceworker-data/`; 30-day retention, 3-day local copy in `/root/db-backups`.
+`_status/last-success.json` is written **only after every part succeeds**; the independent
+`db-backup-health.timer` (every 6h) alerts on Telegram when it is missing or >36h old.
+**`/opt/backups/backup-databases.sh` is the retired pre-2026-11-10 script — do not edit it.**
+
+Verify (prints no secrets):
+```bash
+systemctl is-active db-backup.timer db-backup-health.timer
+TZ=UTC systemctl show db-backup.timer -p LastTriggerUSec -p NextElapseUSecRealtime
+journalctl -u db-backup.service -n 40 --no-pager -o cat
+set -a; . /etc/instaweb-backup.env; set +a
+rclone cat "r2backup:${R2_BUCKET}/_status/last-success.json"
+for p in spaceworker vantra tacticalrmm meshcentral; do rclone lsf "r2backup:${R2_BUCKET}/$p/" | tail -1; done
+```
+Restore drill (proves the dumps are restorable, not just uploaded; always drop the scratch DBs):
+```bash
+sudo -u postgres createdb -T template0 backup_verify_x
+gunzip -c /root/db-backups/<db>-<ts>.sql.gz | sudo -u postgres psql -v ON_ERROR_STOP=1 -d backup_verify_x
+sudo -u postgres psql -tAc "select count(*) from information_schema.tables where table_schema not in ('pg_catalog','information_schema')" -d backup_verify_x
+sudo -u postgres dropdb backup_verify_x
+```
+Admin truth: `/admin101/background-jobs` reads `systemctl show` with `TZ=UTC`
+(`lib/systemd-time.ts` in Vantra). A "Never" next to an **active** timer is the UTC-parse
+regression, not a stopped backup — probe the journal before believing the page.
+
 **Env rule:** **never `source /opt/spaceworker/.env`** — it is not shell-safe (a value
 containing `seed` fails the whole source). Read single values instead:
 `grep -m1 '^KEY=' /opt/spaceworker/.env | cut -d= -f2-`. Same for `/opt/vantra/.env`.

@@ -1,6 +1,6 @@
 # PLAN — Nightly R2 backup hardening (2026-11-10)
 
-Status: IN PROGRESS — updated before/after every edit (owner insurance rule).
+Status: COMPLETE except the owner-gated Vantra deploy — updated before/after every edit.
 
 ## Objective
 Keep the nightly Cloudflare R2 backup working, and make it protect **everything that matters**:
@@ -53,17 +53,30 @@ an independent staleness alarm.
 - [ ] commit `deploy/*` + this plan on `main`, push (no SpaceWorker app deploy needed)
 
 ### P4 — Vantra UI tells the truth
-- [ ] `lib/systemd-time.ts` (TZ=UTC + regex → Date.UTC) + use in `lib/background-jobs.ts`
-- [ ] add `db-backup-health` job + fix schedule/description copy
-- [ ] `tests/systemd-time.test.ts`; tsc + full Vantra suite
-- [ ] fix `.github/workflows/deploy.yml` old host → `207.244.224.57`
-- [ ] commit + push main; **PAUSE for owner GO before dispatching deploy**
+BEFORE note: edit `lib/systemd-time.ts` (new pure parser), `lib/background-jobs.ts`
+(import it, run `systemctl` with `TZ=UTC`, refresh db-backup copy, add health row),
+`tests/systemd-time.test.ts` (new), `.github/workflows/deploy.yml` (3 dead-host lines).
+- [x] `lib/systemd-time.ts` (TZ=UTC + regex → Date.UTC) + use in `lib/background-jobs.ts`
+- [x] add `db-backup-health` job + fix schedule/description copy
+- [x] `tests/systemd-time.test.ts`; `tsc` 0, eslint 0, 5/5 new tests pass
+- [x] full Vantra suite 170/175: 4 move-flow failures reproduced from the owner's
+      uncommitted `lib/trmm-install-command.ts` (the same tests pass on clean HEAD);
+      `wol-scripts` also fails on clean HEAD -> both pre-existing, none from this change
+- [x] fix `.github/workflows/deploy.yml` old host → `207.244.224.57` (3/3)
+- [x] commit + push main; **PAUSE for owner GO before dispatching deploy**
+- [ ] verify at dispatch time that the repo secret `VPS_SSH_KEY` is authorized on the
+      new box (same secret NAME is used by SpaceWorker, but secrets are per-repo)
 
-### P6 — health alarm
-- [ ] install/verify timer; dry-run stale detection; live run returns OK
+### P6 — health alarm — DONE
+- [x] install/verify timer; live run `OK: last full backup 0h ago; all four DB prefixes populated`
+- [x] dry-run with a missing bucket produced the STALE alert path and sent nothing
+- [x] timer active, next `2026-11-10 19:42 CET` (18:42 UTC)
 
-### P7 — docs + report
-- [ ] HOW_WE_MOVE_FAST §0a, verification pin, SENIOR_HANDOFF, this file AFTER
+### P7 — docs + report — DONE
+- [x] HOW_WE_MOVE_FAST §0a "Nightly backup" block (verify + restore drill)
+- [x] verification pin 18 + 2026-11-10 baseline note
+- [x] SENIOR_HANDOFF §6 newest-state paragraph + §12 log entry
+- [x] this file AFTER
 
 ## Verification commands (planned)
 - `systemctl show db-backup.timer db-backup.service --no-pager -p ...`
@@ -87,3 +100,12 @@ an independent staleness alarm.
   Timer now `NextElapse 2026-11-11 04:18:57 CET`; health timer next `2026-11-10 19:42:29 CET`.
   Note: explicit UTC schedule means 03:17 UTC = 04:17 CET in winter (one-hour shift vs old local timer).
 - P2 proof: restore drill counts above — dumps are genuinely restorable, not just uploaded.
+- P4: live `TZ=UTC systemctl show` strings parsed correctly end-to-end
+  (`Tue 2026-11-10 15:53:43 UTC` → `2026-11-10T15:53:43.000Z`); blank/`n/a` → null.
+  Also stopped systemd's default `Result=success` from rendering a green badge
+  before a job has ever run.
+- P6: health timer installed/active; live check OK; alert path proven with
+  `R2_BUCKET=...doesnotexist --dry-run` (exit 1, no Telegram sent).
+- P7: docs updated; SpaceWorker `main` `1b2247e` (code) + this docs commit, Vantra
+  `main` `2c1bde4`; Vantra push-build green. **Only remaining action is the
+  owner-gated `gh workflow run 'Build & Deploy'`.**

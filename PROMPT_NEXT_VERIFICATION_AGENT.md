@@ -17,6 +17,12 @@ Pending-owner branch: `agent/task-207-mesh-scoped-mint` = `dd2af25` (rebased ont
 suite 131/131, tsc 0) — NOT merged, NOT deployed; if a deploy suddenly carries TASK_207
 scoped-mint code, that's the owner's GO being executed.
 
+**2026-11-10 update:** SpaceWorker `main` = **`1b2247e`** (backup hardening, units +
+scripts in `deploy/`) · Vantra `main` = **`2c1bde4`** (systemd timestamp parse fix +
+deploy host → `207.244.224.57`; push-build green, **deploy NOT dispatched yet — owner
+GO required**). Vantra's local tree also carries unrelated uncommitted owner files; do
+not treat those as shipped.
+
 ## Regression pins that must stay true (each was a shipped fix — verify by probe, not memory)
 1. **Invite-only**: anon `GET /` → 200 joker; `/login`, `/signup`, `/home`, `/cyberlab`,
    `/dashboard` → **307** to `/`. `/cyberlab` must NOT be a static bake (no
@@ -87,6 +93,17 @@ scoped-mint code, that's the owner's GO being executed.
     no `sw_ref` → **403** (an empty `{}` body → **400** from zod BEFORE the F8
     gate — that is not an F8 failure; send a real email/password/acceptedTerms
     body when probing pin 2).
+18. **Backup coverage + honest timestamps (2026-11-10)**: `db-backup.timer` and
+    `db-backup-health.timer` both **active**; R2 `instaweb-db-backups` has a dump <36h
+    old under EACH of `spaceworker/ vantra/ tacticalrmm/ meshcentral/`, plus
+    `_status/last-success.json` listing all four DBs (grep the journal for
+    `Nightly backup completed successfully`). Units/scripts must match repo
+    `deploy/backup-databases.sh` + `deploy/db-backup*` (box-only drift = FAIL, same
+    rule as pin 10). The admin page `/admin101/background-jobs` (authenticated) must
+    show real times for `db-backup`, and a `db-backup-health` row; **"Never" while the
+    timer is active = the Date.parse(CET) regression** — probe
+    `TZ=UTC systemctl show db-backup.timer -p LastTriggerUSec` and the API JSON, not
+    the rendered text. Do not edit `/opt/backups/backup-databases.sh` (retired).
 17. **Orphan `.next` chunks can lie (found 2026-10-20)**: `/opt/vantra/.next` (and
     any box `.next`) may contain STALE chunk files from earlier/box-side builds —
     the box currently holds an orphan chunk containing `[TASK_207] scoped console

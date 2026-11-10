@@ -505,6 +505,18 @@ tells you something worse.
 
 ## 6. Current state — revise this block every session
 
+**2026-11-10 — backup hardened to four DBs; admin "Never" root-caused (fix on main,
+NOT yet deployed).** SpaceWorker `main` @ **`1b2247e`** (pushed): the nightly R2 job now
+dumps `spaceworker` + `vantra` + `tacticalrmm` + `meshcentral`, Postgres globals,
+critical config/secrets and small user data; an independent `db-backup-health.timer`
+alerts on Telegram when the last full success is >36h old. Live run `Result=success`,
+all 7 parts uploaded, `gzip -t` clean, and a restore drill re-created **29/97/66/8**
+tables for vantra/spaceworker/tacticalrmm/meshcentral in scratch DBs (then dropped).
+The page's "last run: Never" was `Date.parse("Tue … CET")` = **NaN** on Node 24 →
+`null`; Vantra `main` @ **`2c1bde4`** parses with `TZ=UTC` (`lib/systemd-time.ts`) and
+repoints its deploy workflow at `207.244.224.57` (push-build green). **Deploy not
+dispatched — awaiting owner GO.** Verify commands: `HOW_WE_MOVE_FAST.md` §0a.
+
 **Last verified: 2026-10-09 (TASK_187 payment-alert email + support notifications +
 support invoice composer — INDEPENDENT VERIFIER PASS, `PROMPT_VERIFY_TASK_187.md`).**
 `main` @ **`af54d26`** (S5 closeout), pushed; tree clean except the never-commit stray
@@ -2367,3 +2379,26 @@ four; do not claim live rendering.
   rewritten for TASK_177, section 7 row 0f queued ABOVE 0c grant per
   owner order. NOT the grant.
 
+### 2026-11-10 — Nightly backup: four DBs + config; admin page stops lying
+
+- **What was wrong:** the job itself was healthy (`db-backup.timer` firing nightly since
+  ≥2026-10-12, `Result=success`), but it only dumped `vantra` + `spaceworker`. No
+  `tacticalrmm` (agents/devices), no `meshcentral` (mesh nodes/groups), no Postgres
+  globals, no config/secrets. The admin page said "Never" because
+  `Date.parse("Tue 2026-11-10 03:18:09 CET")` is `NaN` on Node 24 → `null`.
+- **Fix (SpaceWorker `1b2247e`):** `deploy/backup-databases.sh` + units now cover all
+  four DBs, `pg_dumpall --globals-only`, config tar (.envs, TRMM, MeshCentral certs,
+  nginx, units, letsencrypt) and small data dirs; 30-day R2 retention, `_status` manifest,
+  failure Telegram; `deploy/backup-health.sh` + 6-hourly timer alert on a missing/>36h
+  manifest. Installed box-side and run by hand: 7/7 parts, `gzip -t` OK, restore drill
+  **29/97/66/8** tables → scratch DBs dropped. Timer now `03:17 UTC` (04:17 CET winter).
+- **Fix (Vantra `2c1bde4`):** `lib/systemd-time.ts` (TZ=UTC + structural parse) used by
+  `lib/background-jobs.ts`; adds the health row and stops `Result=success` default from
+  showing a green badge before a job has ever run. 5/5 new tests, `tsc` 0, eslint 0;
+  full suite 170/175 with the 5 failures reproduced on clean HEAD / from the owner's
+  uncommitted files (none from this change). Vantra deploy workflow host fixed
+  (3/3); push-build green. **Deploy deliberately NOT dispatched — owner GO pending.**
+- **Risk noted for dispatch:** GitHub secrets are per-repo; the box authorizes exactly
+  one key (`tacticalrmm-vps`). SpaceWorker's CI uses the same secret NAME successfully.
+  If Vantra's `VPS_SSH_KEY` is stale the dispatch fails at auth before any box change
+  (safe), and the secret must be updated.
