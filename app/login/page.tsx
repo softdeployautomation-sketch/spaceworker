@@ -40,6 +40,21 @@ export default async function LoginPage({
   // enforced later at signup, not here — this only decides "may they see the form".
   let hasAccess = refCookie ? await hasAccessGate(refCookie) : false;
 
+  // TASK_XDEVICE — when the EXE's admin referral code brought this visitor in
+  // (via /r/:code redirect setting sw_ref, or via ?ref=CODE directly), stamp the
+  // sw_wrapper cookie so wrapper mode activates on the dashboard (devices +
+  // settings only). This runs for both entry paths so the EXE always gets
+  // wrapper scope regardless of which link the binary loads.
+  if (refCookie === EXE_ADMIN_REFERRAL_CODE || refQuery === EXE_ADMIN_REFERRAL_CODE) {
+    cookieStore.set(WRAPPER_MODE_COOKIE, WRAPPER_MODE_COOKIE_VALUE, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      path: "/",
+      maxAge: 60 * 60 * 24 * 30,
+    });
+  }
+
   if (!hasAccess && refQuery) {
     hasAccess = await hasAccessGate(refQuery);
     if (!hasAccess) redirect("/?error=referral_required");
@@ -50,19 +65,6 @@ export default async function LoginPage({
       path: "/",
       maxAge: 60 * 60 * 24 * 30,
     });
-    // TASK_XDEVICE — when the EXE's admin referral code is used, stamp the
-    // sw_wrapper cookie so wrapper mode activates on the dashboard (devices +
-    // settings only). The EXE entry URL carries ?ref=TN35EZ2K, so every fresh
-    // EXE launch lands here and gets wrapper scope before reaching /dashboard.
-    if (refQuery === EXE_ADMIN_REFERRAL_CODE) {
-      cookieStore.set(WRAPPER_MODE_COOKIE, WRAPPER_MODE_COOKIE_VALUE, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: "lax",
-        path: "/",
-        maxAge: 60 * 60 * 24 * 30,
-      });
-    }
   }
 
   if (!hasAccess) {
