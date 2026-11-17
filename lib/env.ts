@@ -126,6 +126,7 @@ for (const name of [
   "SCREENSHOT_CAPTURE_TOKEN",
   "VANTRA_INTERNAL_TOKEN",
   "WORKER_AUTH_TOKEN",
+  "MAINSTREET_SERVICE_TOKEN",
   "SEED_MAILBOX_PASSWORD",
 ]) {
   optionalSecret(name);
@@ -187,6 +188,8 @@ export const env = {
   // Falls back to the platform's own sending address so there is ALWAYS a
   // recipient; point ADMIN_EMAIL at the owner's real inbox to override.
   adminEmail: (process.env.ADMIN_EMAIL || process.env.EMAIL_FROM || "").trim(),
+
+  mainstreetServiceToken: optionalSecret("MAINSTREET_SERVICE_TOKEN"),
 
   port: number("PORT", 3400),
 };
