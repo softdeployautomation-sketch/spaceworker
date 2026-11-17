@@ -1,0 +1,47 @@
+=== BrowserSessionPanel consumers ===
+app/dashboard/browser/page.tsx:7:import BrowserSessionPanel from "@/components/browser-session-panel";
+app/dashboard/browser/page.tsx:112:        <BrowserSessionPanel
+
+=== device-console.tsx: browser-session / neko / clone-session references ===
+none
+
+=== device-list.tsx: any browser/neko/popout opener ===
+522:      // TASK_194 S2 — the browser-only "Blob + synthetic <a download> click"
+527:      // keeps the browser path byte-identical for the hosted web product.
+618:  // the app (and the desktop EXE build has no browser chrome to fall back on).
+
+=== clone-session-view.tsx head (imports + what it renders) ===
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+
+import { cn } from "@/lib/cn";
+
+type SessionPayload = {
+  ok: boolean;
+  cloneId: string;
+  status: string;
+  openUrl: string | null;
+  session: {
+    id: string;
+    status: string;
+    egressMode: string | null;
+    startedAt: string;
+    lastUsedAt: string | null;
+    stoppedAt: string | null;
+    expiresAt: string | null;
+  };
+  display: {
+    browser: string;
+    profileName: string | null;
+    egressMode: string;
+    source: { id: string; name: string; deviceStatus: string; online: boolean } | null;
+    destination: { id: string; name: string; deviceStatus: string; online: boolean } | null;
+    launchedAt: string | null;
+    expiresAt: string | null;
+    ttlRemainingMs: number | null;
+    idleRemainingMs: number | null;
+
+=== /dashboard/browser page ===
+app/dashboard/browser/page.tsx
+app/dashboard/browser-profiles/page.tsx

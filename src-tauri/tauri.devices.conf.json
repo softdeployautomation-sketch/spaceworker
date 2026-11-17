@@ -4,6 +4,7 @@
   "identifier": "com.spaceworker-os.devices",
   "bundle": {
     "targets": ["nsis"],
-    "createUpdaterArtifacts": false
+    "createUpdaterArtifacts": false,
+    "resources": []
   }
 }

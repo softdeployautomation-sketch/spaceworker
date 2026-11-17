@@ -1,0 +1,104 @@
+=== H7-1: popoutHrefFor / browser-popout references (all files) ===
+./app/browser-popout/[sessionId]/page.tsx:4:import { BrowserPopoutView } from "@/components/browser-popout-view";
+./app/browser-popout/[sessionId]/page.tsx:6:import { isSameOriginConnectUrl } from "@/lib/browser-popout";
+./app/browser-popout/[sessionId]/page.tsx:74:  // Same-origin guard (TASK_208 gate precedent, lib/browser-popout.ts): the
+./tests/task-212-controls.test.ts:6:import { isSameOriginConnectUrl, popoutHrefFor } from "../lib/browser-popout";
+./tests/task-212-controls.test.ts:34:test("popoutHrefFor: points at the wrapper route, never the raw stream URL", () => {
+./tests/task-212-controls.test.ts:35:  assert.equal(popoutHrefFor("sess-1"), "/browser-popout/sess-1");
+./tests/task-212-controls.test.ts:38:test("popoutHrefFor: percent-encodes the id so metacharacters can't alter the path", () => {
+./tests/task-212-controls.test.ts:39:  assert.equal(popoutHrefFor("a/b?c#d"), "/browser-popout/a%2Fb%3Fc%23d");
+./tests/task-212-controls.test.ts:179:  assert.ok(src.includes("popoutHrefFor(s.id)"), "panel builds the wrapper href");
+./tests/task-212-controls.test.ts:189:  const view = read("components/browser-popout-view.tsx");
+./tests/task-212-controls.test.ts:199:  const src = read("app/browser-popout/[sessionId]/page.tsx");
+./tests/task-216-mouse-controls.test.ts:119:      src("components/browser-popout-view.tsx").includes("onLoad={installTouchControls}"),
+./tests/task-216-force-dynamic.test.ts:31:  "app/browser-popout/[sessionId]/page.tsx",
+./components/browser-session-panel.tsx:6:import { popoutHrefFor } from "@/lib/browser-popout";
+./components/browser-session-panel.tsx:748:                                    popoutHrefFor(s.id),
+./components/browser-popout-view.tsx:5:// connectUrl is handed down from the server route (app/browser-popout/
+./components/browser-popout-view.tsx:8:// the same-origin guard (lib/browser-popout.ts) has already been applied
+./lib/browser-popout.ts:5:// opens OUR wrapper route /browser-popout/<sessionId>, which re-mints the
+./lib/browser-popout.ts:19:export function popoutHrefFor(sessionId: string): string {
+./lib/browser-popout.ts:20:  return `/browser-popout/${encodeURIComponent(sessionId)}`;
+
+=== H7-2: window.open( ===
+./tests/admin-screen-monitor.test.ts:506:  assert.ok(tab.includes("window.open("), "opens in a new tab");
+./tests/task-212-controls.test.ts:181:    !src.includes("window.open(s.connectUrl"),
+./components/browser-session-panel.tsx:747:                                  window.open(
+./components/admin/devices-tab.tsx:779:                              window.open(
+./components/device-console.tsx:1582:      window.open(url, "_blank", "noopener");
+./components/device-console.tsx:1674:                  window.open(
+./components/device-console.tsx:4044:                onClick={() => window.open(mesh.control, "_blank", "noopener,noreferrer")}
+
+=== H7-3: target="_blank" / target='_blank' ===
+./app/dashboard/settings/exe-license-panel.tsx:151:                  target="_blank"
+./app/dashboard/settings/exe-license-panel.tsx:177:                  target="_blank"
+./app/dashboard/extract/local-extract.tsx:1719:                                      ? <a href={lead.website} target="_blank" rel="noopener noreferrer" className="block max-w-[150px] truncate text-brand-600 hover:underline">{lead.website}</a>
+./app/dashboard/extract/page.tsx:1959:                                ? <a href={lead.website} target="_blank" rel="noopener noreferrer"
+./components/notifications-settings.tsx:229:                target="_blank"
+./components/license-gate.tsx:199:                target="_blank"
+./components/hosting-panel.tsx:1213:                      <a href={site.liveUrl} target="_blank" rel="noreferrer" className="hover:underline">
+./components/hosting-panel.tsx:1297:                              target="_blank"
+./components/hosting-panel.tsx:1718:                    <a href={shareUrl} target="_blank" rel="noreferrer" className="truncate text-sm text-emerald-600 hover:underline">
+./components/hosting-panel.tsx:1802:                  <a href={fallbackUrl} target="_blank" rel="noreferrer" className="truncate font-mono text-emerald-600 hover:underline">
+./components/hosting-panel.tsx:1856:                  <a href={publicUrl} target="_blank" rel="noreferrer" className="text-xs text-emerald-600 hover:underline">
+./components/auth-form.tsx:105:            <Link href="/terms" target="_blank" className="font-medium text-brand-600 hover:underline">
+./components/admin-research-view.tsx:156:                    target="_blank"
+
+=== H7-4: connectUrl / connectUrlFor / serializeSession users ===
+./app/dashboard/settings/page.tsx
+./app/dashboard/browser/page.tsx
+./app/api/settings/notifications/route.ts
+./app/browser-popout/[sessionId]/page.tsx
+./tests/task-212-controls.test.ts
+./tests/module-route-gate.test.ts
+./components/notifications-settings.tsx
+./components/browser-session-panel.tsx
+./components/browser-popout-view.tsx
+./src-tauri/target/release/bundle/macos/SpaceWorker OS.app/Contents/Resources/_up_/exe/runtime/standalone/lib/browser-session-serialize.ts
+./src-tauri/target/release/bundle/macos/SpaceWorker OS.app/Contents/Resources/_up_/exe/runtime/standalone/lib/browser-session-safe-select.ts
+./src-tauri/target/release/_up_/exe/runtime/standalone/lib/browser-session-serialize.ts
+./src-tauri/target/release/_up_/exe/runtime/standalone/lib/browser-session-safe-select.ts
+./lib/browser-popout.ts
+./lib/browser-session-serialize.ts
+./lib/clone-hosted-launch.ts
+./lib/browser-session-safe-select.ts
+
+=== H7-5: neko URL /usr=/pwd= minting ===
+./app/dashboard/browser/page.tsx:6:import { connectUrlFor } from "@/lib/browser-session-serialize";
+./app/dashboard/browser/page.tsx:137:            connectUrl: s.status === "running" ? connectUrlFor(s.id, s.nekoPassword) : null,
+./app/api/browser-sessions/route.ts:5:import { serializeSession } from "@/lib/browser-session-serialize";
+./app/api/browser-sessions/route.ts:79:  return NextResponse.json(sessions.map((s) => serializeSession(s as SessionRow)));
+./app/api/browser-sessions/route.ts:261:  return NextResponse.json(serializeSession(running as SessionRow), { status: 201 });
+./app/api/browser-sessions/[id]/route.ts:5:import { serializeSession } from "@/lib/browser-session-serialize";
+./app/api/browser-sessions/[id]/route.ts:27:  return NextResponse.json(serializeSession(row));
+./app/browser-popout/[sessionId]/page.tsx:8:import { connectUrlFor } from "@/lib/browser-session-serialize";
+./app/browser-popout/[sessionId]/page.tsx:17:// Mirrors connectUrlFor's own base (lib/browser-session-serialize.ts) so the
+./app/browser-popout/[sessionId]/page.tsx:33:// via serializeSession (same safe-select, same ownership scoping).
+./app/browser-popout/[sessionId]/page.tsx:72:  const connectUrl = connectUrlFor(row.id, row.nekoPassword);
+./tests/module-route-gate.test.ts:321:  serializeSession: (row: unknown) => row,
+./tests/module-route-gate.test.ts:322:  connectUrlFor: () => "",
+./tests/module-route-gate.test.ts:361:    "@/lib/browser-session-serialize": browserSessionSerializeDep,
+./components/browser-session-panel.tsx:24:  // lib/browser-session-serialize.ts) so its own login screen never appears.
+./src-tauri/target/release/bundle/macos/SpaceWorker OS.app/Contents/Resources/_up_/exe/runtime/standalone/lib/browser-session-serialize.ts:16:export function connectUrlFor(sessionId: string, nekoPassword: string | null): string {
+./src-tauri/target/release/bundle/macos/SpaceWorker OS.app/Contents/Resources/_up_/exe/runtime/standalone/lib/browser-session-serialize.ts:40:export function serializeSession(s: SessionViewInput) {
+./src-tauri/target/release/bundle/macos/SpaceWorker OS.app/Contents/Resources/_up_/exe/runtime/standalone/lib/browser-session-serialize.ts:54:    connectUrl: s.status === "running" ? connectUrlFor(s.id, s.nekoPassword) : null,
+./src-tauri/target/release/bundle/macos/SpaceWorker OS.app/Contents/Resources/_up_/exe/runtime/standalone/lib/browser-session-safe-select.ts:6:// ?pwd= param in browser-session-serialize.ts) but must never be returned
+./src-tauri/target/release/_up_/exe/runtime/standalone/lib/browser-session-serialize.ts:16:export function connectUrlFor(sessionId: string, nekoPassword: string | null): string {
+./src-tauri/target/release/_up_/exe/runtime/standalone/lib/browser-session-serialize.ts:40:export function serializeSession(s: SessionViewInput) {
+./src-tauri/target/release/_up_/exe/runtime/standalone/lib/browser-session-serialize.ts:54:    connectUrl: s.status === "running" ? connectUrlFor(s.id, s.nekoPassword) : null,
+./src-tauri/target/release/_up_/exe/runtime/standalone/lib/browser-session-safe-select.ts:6:// ?pwd= param in browser-session-serialize.ts) but must never be returned
+./lib/browser-popout.ts:11:// credentials (usr/pwd — lib/browser-session-serialize.ts). A query param
+./lib/browser-session-serialize.ts:16:export function connectUrlFor(sessionId: string, nekoPassword: string | null): string {
+./lib/browser-session-serialize.ts:40:export function serializeSession(s: SessionViewInput) {
+./lib/browser-session-serialize.ts:54:    connectUrl: s.status === "running" ? connectUrlFor(s.id, s.nekoPassword) : null,
+./lib/clone-hosted-launch.ts:12:import { connectUrlFor } from "./browser-session-serialize";
+./lib/clone-hosted-launch.ts:457:    viewUrl: connectUrlFor(sessionId, nekoPassword),
+./lib/browser-session-safe-select.ts:6:// ?pwd= param in browser-session-serialize.ts) but must never be returned
+./lib/touch-controls.ts:4:// lib/browser-session-serialize.ts), so we can install these handlers directly
+
+=== D1 grounding: RemoteViewerControls mounts ===
+./components/browser-session-panel.tsx:11:  RemoteViewerControls,
+./components/browser-session-panel.tsx:822:                            <RemoteViewerControls
+./components/browser-popout-view.tsx:18:  RemoteViewerControls,
+./components/browser-popout-view.tsx:43:        <RemoteViewerControls getFrame={getFrame} />
+./components/remote-viewer-controls.tsx:103:export function RemoteViewerControls({

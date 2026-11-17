@@ -1,0 +1,23 @@
+=== /api/clones session routes ===
+app/api/clones/[cloneId]/advance/route.ts
+app/api/clones/[cloneId]/revoke/route.ts
+app/api/clones/[cloneId]/route.ts
+app/api/clones/[cloneId]/session/route.ts
+
+=== openUrl occurrences ===
+app/api/clones/[cloneId]/session/route.ts:11:// (TASK_111): openUrl (the viewer URL stamped at launch), plus everything the
+app/api/clones/[cloneId]/session/route.ts:58:      openUrl: row.viewUrl,
+components/device-console.tsx:1581:      const url = typeof data.openUrl === "string" && data.openUrl ? data.openUrl : `/clone/${cloneId}`;
+components/clone-session-view.tsx:11:  openUrl: string | null;
+components/clone-session-view.tsx:135:  const ready = data !== null && data.status === "active" && !!data.openUrl && !revoked;
+components/clone-session-view.tsx:179:            src={data?.openUrl as string}
+
+=== clone-hosted-launch: viewUrl / connectUrlFor ===
+12:import { connectUrlFor } from "./browser-session-serialize";
+38:  viewUrl?: string;
+457:    viewUrl: connectUrlFor(sessionId, nekoPassword),
+
+=== /clone pages + viewUrl consumers ===
+app/clone/[cloneId]/page.tsx
+app/api/clones/[cloneId]/session/route.ts:44:        viewUrl: true,
+app/api/clones/[cloneId]/session/route.ts:58:      openUrl: row.viewUrl,

@@ -1,0 +1,22 @@
+=== NOTE: main is checked out by worktree /Users/mikeolab/sw-vbsfix ===
+=== so 'git checkout main' is forbidden; cut 218 branch FROM the main ref instead ===
+16bd2df
+
+=== cut 218 branch from main ref (no checkout of main itself) ===
+Switched to a new branch 'agent/task-218-mobile-neko-mouse'
+agent/task-218-mobile-neko-mouse
+16bd2df t220: port two orphaned-branch fixes that CI-from-main had reverted (save-as-template + desktop/mobile link split)
+
+=== confirm base == main (16bd2df), NOT 217 ===
+BASE == main (GOOD)
+
+=== 217 still intact + unmerged? ===
+0061836 TASK_217 (task agent): LAN/WiFi audit lab — probe pack (lib/security-audit/probes.ts), judging service + key scrub, SecurityAudit/AuditFinding tables, security-audit routes, CommandTab NetworkAuditCard, 34 tests. Uncommitted-at-handoff rule lifted per senior instruction.
+217 NOT merged into main (GOOD)
+
+=== 218 target files exist on this base? ===
+OK   components/browser-popout-view.tsx (      47 lines)
+OK   components/browser-session-panel.tsx (     959 lines)
+OK   components/remote-viewer-controls.tsx (     370 lines)
+OK   lib/touch-controls.ts (     374 lines)
+OK   app/browser-popout/[sessionId]/page.tsx (      93 lines)

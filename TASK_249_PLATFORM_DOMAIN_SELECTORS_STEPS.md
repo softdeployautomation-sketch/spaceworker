@@ -130,3 +130,13 @@ fixed". Nothing below is aspirational — every claim is backed by the commands 
 - TASK_250 (mailbox SMTP vs Zoho Mail API OAuth) is scoped next, not part of this
   branch.
 - Mobile Cyber Lab UI cleanup is unscoped/unapproved.
+
+## Deploy log (2026-10-29)
+- Merged `agent/task-249-platform-domain-selectors` (ff1251d) → `main` (b7a20dc), pushed to origin/main — CI Build & Deploy triggered.
+- **Fix deployed:** zone listing endpoint (`GET /api/admin/hosting/zones`) previously required a dedicated `workerTokenCiphertext` column. Accounts added with a single token (stored in `tokenCiphertext`) got "Failed to load zones". Now falls back to decrypting the main API token when no separate worker token exists. Commit `b41c766`, pushed to origin/main — CI Build & Deploy triggered.
+- Added two platform accounts to LOCAL dev DB via standalone script (NOT production):
+  - `mainstreet.sbs` — account `9bc97c44fc72505e6f9f413c568ffa7b`, priority 1, status active, token hint `…4967`
+  - `mainstreet.work` — account `9bc97c44fc72505e6f9f413c568ffa7b`, priority 2, status active, token hint `…0459`
+- Verified both tokens against Cloudflare API: both return 200 for `/accounts` and can list zones (`/zones?account.id=...`).
+- Zones visible in account: broks.beauty, instaweb.top, mainaccess.top, mainstreetmint.sbs, mainstreetmint.top, mainstreetmint.work, spaceworker.top.
+- Note: exact domains `mainstreet.sbs` / `mainstreet.work` are not zones in this account; the matching zones are `mainstreetmint.sbs` / `mainstreetmint.work`. Tokens are account-scoped and valid regardless.

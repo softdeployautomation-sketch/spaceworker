@@ -1,0 +1,133 @@
+=== branch / head ===
+agent/task-217-lan-audit
+fe3e717
+2026-10-17 03:23:49 +0100 TASK_216 (task agent, verified & committed by senior verification agent): fix /cyberlab static-307 bake + private-browser mouse controls (TASK_212 fallout).
+
+=== MODIFIED (tracked) files ===
+components/device-console.tsx
+package.json
+prisma/schema.prisma
+
+=== UNTRACKED: task-relevant (TASK_218 may own these) ===
+TASK_210_DEPLOY_TOOLING_HARDENING.md
+TASK_210_DEPLOY_TOOLING_HARDENING_STEPS.md
+TASK_211_MESH_CONNECT_INPUT_AUTOCHECK.md
+TASK_211_MESH_CONNECT_INPUT_AUTOCHECK_STEPS.md
+TASK_212_CONTROLS.md
+TASK_212_CONTROLS_STEPS.md
+TASK_213_V73_RELAY_TROUBLESHOOT_STEPS.md
+TASK_214_CLONE_EXTENSION_INSTALL_STEPS.md
+TASK_215_ADMIN_SUPPORT_AND_REFERRAL_FIXES_STEPS.md
+TASK_217_LAN_AUDIT_PROTOCOL_STEPS.md
+app/api/security-audit/consent/route.ts
+app/api/security-audit/runs/[id]/route.ts
+app/api/security-audit/runs/route.ts
+lib/security-audit/judge.ts
+lib/security-audit/probes.ts
+lib/security-audit/run.ts
+scripts/s217-shared-diff.out
+scripts/s217-shared-diff.sh
+scripts/s218-prep.out
+scripts/s218-prep.sh
+tests/security-audit-judge.test.ts
+tests/security-audit-scope.test.ts
+
+=== 217 task files present? ===
+drwxr-xr-x    5 mikeolab  staff    160 Oct 17 07:33 .
+drwxr-xr-x  167 mikeolab  staff   5344 Oct 17 07:20 ..
+-rw-r--r--    1 mikeolab  staff  16892 Oct 17 07:45 judge.ts
+-rw-r--r--    1 mikeolab  staff  10086 Oct 17 07:37 probes.ts
+-rw-r--r--    1 mikeolab  staff   5205 Oct 17 07:33 run.ts
+total 0
+drwxr-xr-x   4 mikeolab  staff   128 Oct 17 07:34 .
+drwxr-xr-x  36 mikeolab  staff  1152 Oct 17 07:33 ..
+drwxr-xr-x   3 mikeolab  staff    96 Oct 17 07:33 consent
+drwxr-xr-x   4 mikeolab  staff   128 Oct 17 07:34 runs
+-rw-r--r--  1 mikeolab  staff  11625 Oct 17 09:23 tests/security-audit-judge.test.ts
+-rw-r--r--  1 mikeolab  staff   3679 Oct 17 09:20 tests/security-audit-scope.test.ts
+total 8
+drwxr-xr-x    3 mikeolab  staff    96 Oct 17 07:31 .
+drwxr-xr-x  118 mikeolab  staff  3776 Oct 17 07:31 ..
+-rw-r--r--    1 mikeolab  staff  1662 Oct 17 07:31 migration.sql
+
+=== 218 target files: current status vs HEAD ===
+components/browser-popout-view.tsx -> clean-vs-HEAD
+components/browser-session-panel.tsx -> clean-vs-HEAD
+components/remote-viewer-controls.tsx -> clean-vs-HEAD
+components/device-list.tsx -> clean-vs-HEAD
+lib/touch-controls.ts -> clean-vs-HEAD
+app/browser-popout/page.tsx -> MISSING
+app/browser-popout/[sessionId]/page.tsx -> clean-vs-HEAD
+
+=== all branches ===
+add-campaign-delete 583b486
+agent/hidden-login-referral-security 68c47e2
+agent/task-103-104-console-ui 9e239d8
+agent/task-104-launcher-backend 2992136
+agent/task-105-resource-governor 7685087
+agent/task-106-idle-refresh 589292f
+agent/task-107-clone-schema 7f27457
+agent/task-108-clone-transport 68c6586
+agent/task-109-clone-orchestrator 9e09145
+agent/task-110-clone-api 75c789d
+agent/task-111-clone-ui 4d2f6ca
+agent/task-112-clone-sweep c47f4b8
+agent/task-119a-live-session 6fb03d1
+agent/task-119b-live-capture 56b2c4a
+agent/task-121b-public-link-zip 7f7b0cb
+agent/task-122a-public-link 1ec9069
+agent/task-123a-wol 3774cfc
+agent/task-125-zip-guide-pdf ad97c54
+agent/task-127-device-screenshots 1563199
+agent/task-128-device-onboarding-quarantine 1499a9e
+agent/task-205-link-routing-wording e2f7c48
+agent/task-206-quarantine-rework cb8ec7b
+agent/task-207-console-scope 57be273
+agent/task-208-neko-mobile 362c6a7
+agent/task-209-vbs-allow-restore 7055cf3
+agent/task-210-deploy-tooling e4e6b7b
+agent/task-211-mesh-input bf8ec8b
+agent/task-212-controls 1c2f056
+agent/task-214-clone-extension-install 067e7fd
+agent/task-215-admin-support-referrals 1c0f077
+agent/task-216-cyberlab-console-mouse fe3e717
+agent/task-217-lan-audit fe3e717
+campaign-delete-confirm-modal f533207
+campaign-device-features aa8bd76
+campaign-sending-fixes 3f4cc59
+campaign-template-diag 88e0e5a
+campaign-ux-fixes db84525
+chore/verify-launcher-windows 30e5a8b
+cyberlab-scope bcc258b
+deliverability-gate-fix 37d8408
+deploy-campaign-fixes 0980a2e
+device-monitor 6f80a16
+env-placeholder-guard ff6a648
+extractor-routing 9ae2dfe
+fix-campaign-selection-and-testsend c468149
+fix-campaign-selection-and-testsend-local 0980a2e
+fix/browser-clone-cookies 6a9cbcc
+fix/mailbox-test-robustness edcade5
+mailer-exe df9931a
+mailer-robustness ad1aac5
+main 16bd2df
+michael-dev e7e71b2
+node-copy-fix d823d7f
+node-routing-admin aeccabc
+paste-recipients de75857
+phase2-selfhosted-env 499dcc9
+playbook-deploy-script 83f44e6
+playbook-parity-check 5d4e08f
+pr-2 90cbb9e
+pr-5-review 9ec0e7a
+pr3-review-merge a1704b4
+rebuild-extraction-worker 8b9bbab
+revert-campaigns-page e636e2b
+screenshot-wake-delay 139dd4e
+self-hosted-build f6b6f78
+send-region-settings 43668c1
+task134-proxy-scoping 888cd38
+widget-agent-settings-panel aa3c3b1
+xdevice-monitor 41d5daa
+
+=== clobber check: 218 targets vs every local head ===

@@ -87,7 +87,7 @@ const RELAY_INGRESS_BIND = process.env.RELAY_INGRESS_BIND ?? "0.0.0.0";
 // the main app's relay-install flow learns what a device should dial without
 // ever holding the raw secret itself, the same trust boundary every other
 // browser-server route already uses (Bearer BROWSER_SERVER_TOKEN).
-const RELAY_INGRESS_PUBLIC_HOST = process.env.RELAY_INGRESS_PUBLIC_HOST ?? "164.68.105.96:3402";
+const RELAY_INGRESS_PUBLIC_HOST = process.env.RELAY_INGRESS_PUBLIC_HOST ?? "207.244.224.57:3402";
 // FIXED 2026-09-25 (real click-through test, ERR_PROXY_CONNECTION_FAILED) —
 // the address a clone's own container actually reaches THIS host at, for the
 // per-device listener (openDeviceListener). Distinct from every other

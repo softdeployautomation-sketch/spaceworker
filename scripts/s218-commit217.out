@@ -1,0 +1,22 @@
+=== branch ===
+agent/task-217-lan-audit
+=== stage ONLY 217 code files ===
+=== staged (must contain no TASK_*.md / scripts/ / s217-shared-diff) ===
+app/api/security-audit/consent/route.ts
+app/api/security-audit/runs/[id]/route.ts
+app/api/security-audit/runs/route.ts
+components/device-console.tsx
+lib/security-audit/judge.ts
+lib/security-audit/probes.ts
+lib/security-audit/run.ts
+package.json
+prisma/migrations/20261126000000_task217_security_audit/migration.sql
+prisma/schema.prisma
+tests/security-audit-judge.test.ts
+tests/security-audit-scope.test.ts
+=== commit ===
+=== new HEAD ===
+0061836 TASK_217 (task agent): LAN/WiFi audit lab — probe pack (lib/security-audit/probes.ts), judging service + key scrub, SecurityAudit/AuditFinding tables, security-audit routes, CommandTab NetworkAuditCard, 34 tests. Uncommitted-at-handoff rule lifted per senior instruction.
+
+=== status after (217 task files must be gone; step-docs still untracked) ===
+?? TASK_217_LAN_AUDIT_PROTOCOL_STEPS.md

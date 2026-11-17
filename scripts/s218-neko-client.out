@@ -1,0 +1,45 @@
+=== neko asset dirs under public/ ===
+none
+
+=== any vendored neko js/css ===
+none
+
+=== /browser proxy route(s) ===
+app/api/admin/browser-sessions/route.ts
+app/api/admin/browser-sessions/[id]/kill/route.ts
+app/api/admin/browser-profiles/[id]/force-release/route.ts
+app/api/internal/browser-profiles/[id]/release/route.ts
+app/api/internal/browser-profiles/[id]/acquire/route.ts
+app/api/browser-sessions/route.ts
+app/api/browser-sessions/[id]/route.ts
+app/api/browser-sessions/[id]/switch/route.ts
+app/api/browser-sessions/[id]/ip/route.ts
+app/api/browser-sessions/byo-test/route.ts
+app/api/admin/browser-sessions/route.ts
+app/api/admin/browser-sessions/[id]/kill/route.ts
+app/api/admin/browser-profiles/[id]/force-release/route.ts
+app/api/internal/browser-profiles/[id]/release/route.ts
+app/api/internal/browser-profiles/[id]/acquire/route.ts
+app/api/browser-sessions/route.ts
+app/api/browser-sessions/[id]/route.ts
+app/api/browser-sessions/[id]/switch/route.ts
+app/api/browser-sessions/[id]/ip/route.ts
+app/api/browser-sessions/byo-test/route.ts
+
+=== offsetX / clientX usage in lib/touch-controls.ts ===
+64:export function mapTouchToLocal(clientX: number, clientY: number, rect: Rect): Point {
+65:  const x = Math.min(Math.max(clientX - rect.left, 0), rect.width);
+66:  const y = Math.min(Math.max(clientY - rect.top, 0), rect.height);
+231:        clientX: r.left + x, clientY: r.top + y,
+232:        screenX: r.left + x, screenY: r.top + y,
+242:        clientX: r.left + r.width / 2, clientY: r.top + r.height / 2,
+250:        x: Math.min(Math.max(t.clientX - r.left, 0), r.width),
+251:        y: Math.min(Math.max(t.clientY - r.top, 0), r.height)
+262:        lastMidY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+279:        var midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+
+=== existing touch-controls tests ===
+agent-touch-controls.test.ts
+task-212-controls.test.ts
+task-216-force-dynamic.test.ts
+task-216-mouse-controls.test.ts

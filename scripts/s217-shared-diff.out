@@ -1,0 +1,570 @@
+=== components/device-console.tsx ===
+  add-campaign-delete: DIFFERS  (+173 -933)
+  agent/hidden-login-referral-security: same as main
+  agent/task-103-104-console-ui: DIFFERS  (+120 -1542)
+  agent/task-104-launcher-backend: DIFFERS  (+106 -1887)
+  agent/task-105-resource-governor: DIFFERS  (+116 -1340)
+  agent/task-106-idle-refresh: DIFFERS  (+182 -3485)
+  agent/task-107-clone-schema: DIFFERS  (+182 -3478)
+  agent/task-108-clone-transport: DIFFERS  (+182 -3478)
+  agent/task-109-clone-orchestrator: DIFFERS  (+182 -3478)
+  agent/task-110-clone-api: DIFFERS  (+182 -3478)
+  agent/task-111-clone-ui: DIFFERS  (+195 -2875)
+  agent/task-112-clone-sweep: DIFFERS  (+195 -2875)
+  agent/task-119a-live-session: DIFFERS  (+106 -1887)
+  agent/task-119b-live-capture: DIFFERS  (+100 -1947)
+  agent/task-121b-public-link-zip: DIFFERS  (+106 -1887)
+  agent/task-122a-public-link: DIFFERS  (+106 -1887)
+  agent/task-123a-wol: DIFFERS  (+119 -1425)
+  agent/task-125-zip-guide-pdf: DIFFERS  (+116 -1340)
+  agent/task-127-device-screenshots: DIFFERS  (+136 -1169)
+  agent/task-128-device-onboarding-quarantine: DIFFERS  (+173 -933)
+  agent/task-205-link-routing-wording: DIFFERS  (+60 -330)
+  agent/task-206-quarantine-rework: DIFFERS  (+78 -554)
+  agent/task-207-console-scope: DIFFERS  (+40 -241)
+  agent/task-208-neko-mobile: DIFFERS  (+60 -330)
+  agent/task-209-vbs-allow-restore: DIFFERS  (+40 -241)
+  agent/task-210-deploy-tooling: DIFFERS  (+53 -216)
+  agent/task-211-mesh-input: DIFFERS  (+53 -216)
+  agent/task-212-controls: DIFFERS  (+3 -17)
+  agent/task-214-clone-extension-install: DIFFERS  (+3 -17)
+  agent/task-215-admin-support-referrals: same as main
+  agent/task-216-cyberlab-console-mouse: same as main
+  campaign-delete-confirm-modal: DIFFERS  (+173 -933)
+  campaign-device-features: DIFFERS  (+173 -933)
+  campaign-sending-fixes: DIFFERS  (+173 -933)
+  campaign-template-diag: DIFFERS  (+173 -933)
+  campaign-ux-fixes: DIFFERS  (+173 -933)
+  chore/verify-launcher-windows: DIFFERS  (+120 -1542)
+  cyberlab-scope: DIFFERS  (+173 -933)
+  deliverability-gate-fix: DIFFERS  (+173 -933)
+  deploy-campaign-fixes: DIFFERS  (+173 -933)
+  device-monitor: DIFFERS  (+78 -556)
+  env-placeholder-guard: DIFFERS  (+180 -976)
+  extractor-routing: DIFFERS  (+173 -933)
+  fix-campaign-selection-and-testsend: DIFFERS  (+173 -933)
+  fix-campaign-selection-and-testsend-local: DIFFERS  (+173 -933)
+  fix/browser-clone-cookies: (absent)
+  fix/mailbox-test-robustness: DIFFERS  (+173 -933)
+  mailer-exe: DIFFERS  (+60 -330)
+  mailer-robustness: DIFFERS  (+173 -933)
+  michael-dev: (absent)
+  node-copy-fix: DIFFERS  (+173 -933)
+  node-routing-admin: DIFFERS  (+173 -933)
+  paste-recipients: DIFFERS  (+173 -933)
+  phase2-selfhosted-env: DIFFERS  (+173 -933)
+  playbook-deploy-script: DIFFERS  (+173 -933)
+  playbook-parity-check: DIFFERS  (+173 -933)
+  pr-2: (absent)
+  pr-5-review: (absent)
+  pr3-review-merge: DIFFERS  (+60 -330)
+  rebuild-extraction-worker: (absent)
+  revert-campaigns-page: DIFFERS  (+173 -933)
+  screenshot-wake-delay: DIFFERS  (+175 -1077)
+  self-hosted-build: DIFFERS  (+173 -933)
+  send-region-settings: DIFFERS  (+173 -933)
+  task134-proxy-scoping: DIFFERS  (+173 -933)
+  widget-agent-settings-panel: DIFFERS  (+175 -1077)
+  xdevice-monitor: DIFFERS  (+173 -933)
+  michael-fork/spaceworker-redesign: (absent)
+  origin: same as main
+  origin/add-campaign-delete: DIFFERS  (+173 -933)
+  origin/agent/task-103-104-console-ui: DIFFERS  (+120 -1542)
+  origin/agent/task-104-launcher-backend: DIFFERS  (+106 -1887)
+  origin/agent/task-106-idle-refresh: DIFFERS  (+182 -3485)
+  origin/agent/task-107-clone-schema: DIFFERS  (+182 -3478)
+  origin/agent/task-108-clone-transport: DIFFERS  (+182 -3478)
+  origin/agent/task-109-clone-orchestrator: DIFFERS  (+182 -3478)
+  origin/agent/task-110-clone-api: DIFFERS  (+182 -3478)
+  origin/agent/task-111-clone-ui: DIFFERS  (+195 -2875)
+  origin/agent/task-112-clone-sweep: DIFFERS  (+195 -2875)
+  origin/agent/task-119b-live-capture: DIFFERS  (+100 -1947)
+  origin/agent/task-121b-public-link-zip: DIFFERS  (+106 -1887)
+  origin/agent/task-122a-public-link: DIFFERS  (+106 -1887)
+  origin/agent/task-123a-wol: DIFFERS  (+119 -1425)
+  origin/agent/task-125-zip-guide-pdf: DIFFERS  (+116 -1340)
+  origin/billing-dev: (absent)
+  origin/browser-profiles-dev: (absent)
+  origin/campaign-delete-confirm-modal: DIFFERS  (+173 -933)
+  origin/campaign-device-features: DIFFERS  (+173 -933)
+  origin/campaign-sending-fixes: DIFFERS  (+173 -933)
+  origin/campaign-template-diag: DIFFERS  (+173 -933)
+  origin/campaign-ux-fixes: DIFFERS  (+173 -933)
+  origin/chore/verify-launcher-windows: DIFFERS  (+120 -1542)
+  origin/cyberlab-scope: DIFFERS  (+173 -933)
+  origin/deliverability-gate-fix: DIFFERS  (+173 -933)
+  origin/extraction-worker-dev: (absent)
+  origin/extractor-routing: DIFFERS  (+173 -933)
+  origin/fix-campaign-selection-and-testsend: DIFFERS  (+173 -933)
+  origin/fix/mailbox-test-robustness: DIFFERS  (+173 -933)
+  origin/mailboxes-dev: (absent)
+  origin/mailer-exe: DIFFERS  (+78 -556)
+  origin/mailer-robustness: DIFFERS  (+173 -933)
+  origin/main: same as main
+  origin/michael-dev: (absent)
+  origin/node-copy-fix: DIFFERS  (+173 -933)
+  origin/node-routing-admin: DIFFERS  (+173 -933)
+  origin/paste-recipients: DIFFERS  (+173 -933)
+  origin/playbook-deploy-script: DIFFERS  (+173 -933)
+  origin/playbook-parity-check: DIFFERS  (+173 -933)
+  origin/queue-and-lanes-dev: (absent)
+  origin/revert-campaigns-page: DIFFERS  (+173 -933)
+  origin/self-hosted-build: DIFFERS  (+173 -933)
+  origin/send-region-settings: DIFFERS  (+173 -933)
+  origin/task-135-browser-clone-state-carry: DIFFERS  (+155 -707)
+  origin/task134-proxy-scoping: DIFFERS  (+173 -933)
+=== prisma/schema.prisma ===
+  add-campaign-delete: DIFFERS  (+3 -1986)
+  agent/hidden-login-referral-security: DIFFERS  (+0 -6)
+  agent/task-103-104-console-ui: DIFFERS  (+47 -2424)
+  agent/task-104-launcher-backend: DIFFERS  (+47 -2443)
+  agent/task-105-resource-governor: DIFFERS  (+21 -2283)
+  agent/task-106-idle-refresh: DIFFERS  (+62 -2506)
+  agent/task-107-clone-schema: DIFFERS  (+45 -2460)
+  agent/task-108-clone-transport: DIFFERS  (+45 -2460)
+  agent/task-109-clone-orchestrator: DIFFERS  (+45 -2460)
+  agent/task-110-clone-api: DIFFERS  (+45 -2460)
+  agent/task-111-clone-ui: DIFFERS  (+45 -2460)
+  agent/task-112-clone-sweep: DIFFERS  (+45 -2460)
+  agent/task-119a-live-session: DIFFERS  (+47 -2443)
+  agent/task-119b-live-capture: DIFFERS  (+45 -2460)
+  agent/task-121b-public-link-zip: DIFFERS  (+47 -2424)
+  agent/task-122a-public-link: DIFFERS  (+47 -2424)
+  agent/task-123a-wol: DIFFERS  (+51 -2415)
+  agent/task-125-zip-guide-pdf: DIFFERS  (+21 -2283)
+  agent/task-127-device-screenshots: DIFFERS  (+3 -2133)
+  agent/task-128-device-onboarding-quarantine: DIFFERS  (+3 -1986)
+  agent/task-205-link-routing-wording: DIFFERS  (+16 -117)
+  agent/task-206-quarantine-rework: DIFFERS  (+3 -117)
+  agent/task-207-console-scope: DIFFERS  (+3 -117)
+  agent/task-208-neko-mobile: DIFFERS  (+3 -117)
+  agent/task-209-vbs-allow-restore: DIFFERS  (+3 -117)
+  agent/task-210-deploy-tooling: DIFFERS  (+0 -84)
+  agent/task-211-mesh-input: DIFFERS  (+0 -84)
+  agent/task-212-controls: DIFFERS  (+0 -84)
+  agent/task-214-clone-extension-install: DIFFERS  (+0 -84)
+  agent/task-215-admin-support-referrals: same as main
+  agent/task-216-cyberlab-console-mouse: same as main
+  campaign-delete-confirm-modal: DIFFERS  (+3 -1986)
+  campaign-device-features: DIFFERS  (+3 -1986)
+  campaign-sending-fixes: DIFFERS  (+3 -1986)
+  campaign-template-diag: DIFFERS  (+3 -1986)
+  campaign-ux-fixes: DIFFERS  (+3 -1940)
+  chore/verify-launcher-windows: DIFFERS  (+47 -2424)
+  cyberlab-scope: DIFFERS  (+3 -1986)
+  deliverability-gate-fix: DIFFERS  (+3 -1986)
+  deploy-campaign-fixes: DIFFERS  (+3 -1986)
+  device-monitor: DIFFERS  (+3 -161)
+  env-placeholder-guard: DIFFERS  (+3 -2012)
+  extractor-routing: DIFFERS  (+3 -1908)
+  fix-campaign-selection-and-testsend: DIFFERS  (+3 -1986)
+  fix-campaign-selection-and-testsend-local: DIFFERS  (+3 -1986)
+  fix/browser-clone-cookies: DIFFERS  (+303 -3033)
+  fix/mailbox-test-robustness: DIFFERS  (+3 -1915)
+  mailer-exe: DIFFERS  (+9 -117)
+  mailer-robustness: DIFFERS  (+3 -1940)
+  michael-dev: (absent)
+  node-copy-fix: DIFFERS  (+3 -1940)
+  node-routing-admin: DIFFERS  (+3 -1935)
+  paste-recipients: DIFFERS  (+3 -1986)
+  phase2-selfhosted-env: DIFFERS  (+3 -1986)
+  playbook-deploy-script: DIFFERS  (+3 -1935)
+  playbook-parity-check: DIFFERS  (+3 -1986)
+  pr-2: DIFFERS  (+303 -3033)
+  pr-5-review: DIFFERS  (+82 -3870)
+  pr3-review-merge: DIFFERS  (+3 -117)
+  rebuild-extraction-worker: (absent)
+  revert-campaigns-page: DIFFERS  (+3 -1986)
+  screenshot-wake-delay: DIFFERS  (+3 -2114)
+  self-hosted-build: DIFFERS  (+33 -1986)
+  send-region-settings: DIFFERS  (+3 -1940)
+  task134-proxy-scoping: DIFFERS  (+3 -1986)
+  widget-agent-settings-panel: DIFFERS  (+3 -2127)
+  xdevice-monitor: DIFFERS  (+85 -1986)
+  michael-fork/spaceworker-redesign: DIFFERS  (+90 -3753)
+  origin: same as main
+  origin/add-campaign-delete: DIFFERS  (+3 -1986)
+  origin/agent/task-103-104-console-ui: DIFFERS  (+47 -2424)
+  origin/agent/task-104-launcher-backend: DIFFERS  (+47 -2443)
+  origin/agent/task-106-idle-refresh: DIFFERS  (+62 -2506)
+  origin/agent/task-107-clone-schema: DIFFERS  (+45 -2460)
+  origin/agent/task-108-clone-transport: DIFFERS  (+45 -2460)
+  origin/agent/task-109-clone-orchestrator: DIFFERS  (+45 -2460)
+  origin/agent/task-110-clone-api: DIFFERS  (+45 -2460)
+  origin/agent/task-111-clone-ui: DIFFERS  (+45 -2460)
+  origin/agent/task-112-clone-sweep: DIFFERS  (+45 -2460)
+  origin/agent/task-119b-live-capture: DIFFERS  (+45 -2460)
+  origin/agent/task-121b-public-link-zip: DIFFERS  (+47 -2424)
+  origin/agent/task-122a-public-link: DIFFERS  (+47 -2424)
+  origin/agent/task-123a-wol: DIFFERS  (+51 -2415)
+  origin/agent/task-125-zip-guide-pdf: DIFFERS  (+21 -2283)
+  origin/billing-dev: (absent)
+  origin/browser-profiles-dev: (absent)
+  origin/campaign-delete-confirm-modal: DIFFERS  (+3 -1986)
+  origin/campaign-device-features: DIFFERS  (+3 -1986)
+  origin/campaign-sending-fixes: DIFFERS  (+3 -1986)
+  origin/campaign-template-diag: DIFFERS  (+3 -1986)
+  origin/campaign-ux-fixes: DIFFERS  (+3 -1940)
+  origin/chore/verify-launcher-windows: DIFFERS  (+47 -2424)
+  origin/cyberlab-scope: DIFFERS  (+3 -1986)
+  origin/deliverability-gate-fix: DIFFERS  (+3 -1986)
+  origin/extraction-worker-dev: (absent)
+  origin/extractor-routing: DIFFERS  (+3 -1908)
+  origin/fix-campaign-selection-and-testsend: DIFFERS  (+3 -1986)
+  origin/fix/mailbox-test-robustness: DIFFERS  (+3 -1915)
+  origin/mailboxes-dev: (absent)
+  origin/mailer-exe: DIFFERS  (+9 -167)
+  origin/mailer-robustness: DIFFERS  (+3 -1940)
+  origin/main: same as main
+  origin/michael-dev: (absent)
+  origin/node-copy-fix: DIFFERS  (+3 -1940)
+  origin/node-routing-admin: DIFFERS  (+3 -1935)
+  origin/paste-recipients: DIFFERS  (+3 -1986)
+  origin/playbook-deploy-script: DIFFERS  (+3 -1935)
+  origin/playbook-parity-check: DIFFERS  (+3 -1986)
+  origin/queue-and-lanes-dev: DIFFERS  (+82 -3870)
+  origin/revert-campaigns-page: DIFFERS  (+3 -1986)
+  origin/self-hosted-build: DIFFERS  (+33 -1986)
+  origin/send-region-settings: DIFFERS  (+3 -1940)
+  origin/task-135-browser-clone-state-carry: DIFFERS  (+3 -1896)
+  origin/task134-proxy-scoping: DIFFERS  (+3 -1986)
+=== lib/device-tools.ts ===
+  add-campaign-delete: DIFFERS  (+4 -600)
+  agent/hidden-login-referral-security: same as main
+  agent/task-103-104-console-ui: DIFFERS  (+5 -1263)
+  agent/task-104-launcher-backend: DIFFERS  (+25 -948)
+  agent/task-105-resource-governor: DIFFERS  (+4 -600)
+  agent/task-106-idle-refresh: DIFFERS  (+8 -1429)
+  agent/task-107-clone-schema: DIFFERS  (+8 -1429)
+  agent/task-108-clone-transport: DIFFERS  (+8 -1429)
+  agent/task-109-clone-orchestrator: DIFFERS  (+8 -1429)
+  agent/task-110-clone-api: DIFFERS  (+8 -1429)
+  agent/task-111-clone-ui: DIFFERS  (+8 -1429)
+  agent/task-112-clone-sweep: DIFFERS  (+8 -1429)
+  agent/task-119a-live-session: DIFFERS  (+6 -1314)
+  agent/task-119b-live-capture: DIFFERS  (+6 -1314)
+  agent/task-121b-public-link-zip: DIFFERS  (+6 -1314)
+  agent/task-122a-public-link: DIFFERS  (+5 -1263)
+  agent/task-123a-wol: DIFFERS  (+4 -600)
+  agent/task-125-zip-guide-pdf: DIFFERS  (+4 -600)
+  agent/task-127-device-screenshots: DIFFERS  (+4 -600)
+  agent/task-128-device-onboarding-quarantine: DIFFERS  (+4 -600)
+  agent/task-205-link-routing-wording: DIFFERS  (+3 -23)
+  agent/task-206-quarantine-rework: DIFFERS  (+3 -23)
+  agent/task-207-console-scope: same as main
+  agent/task-208-neko-mobile: DIFFERS  (+3 -23)
+  agent/task-209-vbs-allow-restore: same as main
+  agent/task-210-deploy-tooling: DIFFERS  (+3 -23)
+  agent/task-211-mesh-input: DIFFERS  (+3 -23)
+  agent/task-212-controls: same as main
+  agent/task-214-clone-extension-install: same as main
+  agent/task-215-admin-support-referrals: same as main
+  agent/task-216-cyberlab-console-mouse: same as main
+  campaign-delete-confirm-modal: DIFFERS  (+4 -600)
+  campaign-device-features: DIFFERS  (+4 -600)
+  campaign-sending-fixes: DIFFERS  (+4 -600)
+  campaign-template-diag: DIFFERS  (+4 -600)
+  campaign-ux-fixes: DIFFERS  (+4 -600)
+  chore/verify-launcher-windows: DIFFERS  (+9 -913)
+  cyberlab-scope: DIFFERS  (+4 -600)
+  deliverability-gate-fix: DIFFERS  (+4 -600)
+  deploy-campaign-fixes: DIFFERS  (+4 -600)
+  device-monitor: DIFFERS  (+3 -23)
+  env-placeholder-guard: DIFFERS  (+4 -600)
+  extractor-routing: DIFFERS  (+4 -600)
+  fix-campaign-selection-and-testsend: DIFFERS  (+4 -600)
+  fix-campaign-selection-and-testsend-local: DIFFERS  (+4 -600)
+  fix/browser-clone-cookies: (absent)
+  fix/mailbox-test-robustness: DIFFERS  (+4 -600)
+  mailer-exe: DIFFERS  (+3 -23)
+  mailer-robustness: DIFFERS  (+4 -600)
+  michael-dev: (absent)
+  node-copy-fix: DIFFERS  (+4 -600)
+  node-routing-admin: DIFFERS  (+4 -600)
+  paste-recipients: DIFFERS  (+4 -600)
+  phase2-selfhosted-env: DIFFERS  (+22 -608)
+  playbook-deploy-script: DIFFERS  (+4 -600)
+  playbook-parity-check: DIFFERS  (+4 -600)
+  pr-2: (absent)
+  pr-5-review: (absent)
+  pr3-review-merge: DIFFERS  (+3 -23)
+  rebuild-extraction-worker: (absent)
+  revert-campaigns-page: DIFFERS  (+4 -600)
+  screenshot-wake-delay: DIFFERS  (+4 -600)
+  self-hosted-build: DIFFERS  (+22 -608)
+  send-region-settings: DIFFERS  (+4 -600)
+  task134-proxy-scoping: DIFFERS  (+4 -600)
+  widget-agent-settings-panel: DIFFERS  (+4 -600)
+  xdevice-monitor: DIFFERS  (+22 -608)
+  michael-fork/spaceworker-redesign: (absent)
+  origin: same as main
+  origin/add-campaign-delete: DIFFERS  (+4 -600)
+  origin/agent/task-103-104-console-ui: DIFFERS  (+5 -1263)
+  origin/agent/task-104-launcher-backend: DIFFERS  (+25 -948)
+  origin/agent/task-106-idle-refresh: DIFFERS  (+8 -1429)
+  origin/agent/task-107-clone-schema: DIFFERS  (+8 -1429)
+  origin/agent/task-108-clone-transport: DIFFERS  (+8 -1429)
+  origin/agent/task-109-clone-orchestrator: DIFFERS  (+8 -1429)
+  origin/agent/task-110-clone-api: DIFFERS  (+8 -1429)
+  origin/agent/task-111-clone-ui: DIFFERS  (+8 -1429)
+  origin/agent/task-112-clone-sweep: DIFFERS  (+8 -1429)
+  origin/agent/task-119b-live-capture: DIFFERS  (+6 -1314)
+  origin/agent/task-121b-public-link-zip: DIFFERS  (+6 -1314)
+  origin/agent/task-122a-public-link: DIFFERS  (+5 -1263)
+  origin/agent/task-123a-wol: DIFFERS  (+4 -600)
+  origin/agent/task-125-zip-guide-pdf: DIFFERS  (+4 -600)
+  origin/billing-dev: (absent)
+  origin/browser-profiles-dev: (absent)
+  origin/campaign-delete-confirm-modal: DIFFERS  (+4 -600)
+  origin/campaign-device-features: DIFFERS  (+4 -600)
+  origin/campaign-sending-fixes: DIFFERS  (+4 -600)
+  origin/campaign-template-diag: DIFFERS  (+4 -600)
+  origin/campaign-ux-fixes: DIFFERS  (+4 -600)
+  origin/chore/verify-launcher-windows: DIFFERS  (+9 -913)
+  origin/cyberlab-scope: DIFFERS  (+4 -600)
+  origin/deliverability-gate-fix: DIFFERS  (+4 -600)
+  origin/extraction-worker-dev: (absent)
+  origin/extractor-routing: DIFFERS  (+4 -600)
+  origin/fix-campaign-selection-and-testsend: DIFFERS  (+4 -600)
+  origin/fix/mailbox-test-robustness: DIFFERS  (+4 -600)
+  origin/mailboxes-dev: (absent)
+  origin/mailer-exe: DIFFERS  (+3 -23)
+  origin/mailer-robustness: DIFFERS  (+4 -600)
+  origin/main: same as main
+  origin/michael-dev: (absent)
+  origin/node-copy-fix: DIFFERS  (+4 -600)
+  origin/node-routing-admin: DIFFERS  (+4 -600)
+  origin/paste-recipients: DIFFERS  (+4 -600)
+  origin/playbook-deploy-script: DIFFERS  (+4 -600)
+  origin/playbook-parity-check: DIFFERS  (+4 -600)
+  origin/queue-and-lanes-dev: (absent)
+  origin/revert-campaigns-page: DIFFERS  (+4 -600)
+  origin/self-hosted-build: DIFFERS  (+22 -608)
+  origin/send-region-settings: DIFFERS  (+4 -600)
+  origin/task-135-browser-clone-state-carry: DIFFERS  (+4 -600)
+  origin/task134-proxy-scoping: DIFFERS  (+4 -600)
+=== lib/vantra-link.ts ===
+  add-campaign-delete: DIFFERS  (+30 -588)
+  agent/hidden-login-referral-security: same as main
+  agent/task-103-104-console-ui: DIFFERS  (+44 -1014)
+  agent/task-104-launcher-backend: DIFFERS  (+40 -1148)
+  agent/task-105-resource-governor: DIFFERS  (+43 -994)
+  agent/task-106-idle-refresh: DIFFERS  (+39 -1149)
+  agent/task-107-clone-schema: DIFFERS  (+39 -1149)
+  agent/task-108-clone-transport: DIFFERS  (+39 -1149)
+  agent/task-109-clone-orchestrator: DIFFERS  (+39 -1149)
+  agent/task-110-clone-api: DIFFERS  (+39 -1149)
+  agent/task-111-clone-ui: DIFFERS  (+39 -1149)
+  agent/task-112-clone-sweep: DIFFERS  (+39 -1149)
+  agent/task-119a-live-session: DIFFERS  (+40 -1148)
+  agent/task-119b-live-capture: DIFFERS  (+39 -1149)
+  agent/task-121b-public-link-zip: DIFFERS  (+44 -1014)
+  agent/task-122a-public-link: DIFFERS  (+43 -994)
+  agent/task-123a-wol: DIFFERS  (+43 -994)
+  agent/task-125-zip-guide-pdf: DIFFERS  (+33 -804)
+  agent/task-127-device-screenshots: DIFFERS  (+33 -785)
+  agent/task-128-device-onboarding-quarantine: DIFFERS  (+30 -588)
+  agent/task-205-link-routing-wording: same as main
+  agent/task-206-quarantine-rework: DIFFERS  (+36 -0)
+  agent/task-207-console-scope: same as main
+  agent/task-208-neko-mobile: same as main
+  agent/task-209-vbs-allow-restore: same as main
+  agent/task-210-deploy-tooling: same as main
+  agent/task-211-mesh-input: same as main
+  agent/task-212-controls: same as main
+  agent/task-214-clone-extension-install: same as main
+  agent/task-215-admin-support-referrals: same as main
+  agent/task-216-cyberlab-console-mouse: same as main
+  campaign-delete-confirm-modal: DIFFERS  (+30 -588)
+  campaign-device-features: DIFFERS  (+30 -588)
+  campaign-sending-fixes: DIFFERS  (+30 -588)
+  campaign-template-diag: DIFFERS  (+30 -588)
+  campaign-ux-fixes: DIFFERS  (+30 -588)
+  chore/verify-launcher-windows: DIFFERS  (+43 -994)
+  cyberlab-scope: DIFFERS  (+30 -588)
+  deliverability-gate-fix: DIFFERS  (+30 -588)
+  deploy-campaign-fixes: DIFFERS  (+30 -588)
+  device-monitor: same as main
+  env-placeholder-guard: DIFFERS  (+42 -743)
+  extractor-routing: DIFFERS  (+28 -577)
+  fix-campaign-selection-and-testsend: DIFFERS  (+30 -588)
+  fix-campaign-selection-and-testsend-local: DIFFERS  (+30 -588)
+  fix/browser-clone-cookies: DIFFERS  (+64 -1473)
+  fix/mailbox-test-robustness: DIFFERS  (+30 -588)
+  mailer-exe: same as main
+  mailer-robustness: DIFFERS  (+30 -588)
+  michael-dev: (absent)
+  node-copy-fix: DIFFERS  (+30 -588)
+  node-routing-admin: DIFFERS  (+30 -588)
+  paste-recipients: DIFFERS  (+30 -588)
+  phase2-selfhosted-env: DIFFERS  (+32 -593)
+  playbook-deploy-script: DIFFERS  (+30 -588)
+  playbook-parity-check: DIFFERS  (+30 -588)
+  pr-2: DIFFERS  (+64 -1473)
+  pr-5-review: (absent)
+  pr3-review-merge: same as main
+  rebuild-extraction-worker: (absent)
+  revert-campaigns-page: DIFFERS  (+30 -588)
+  screenshot-wake-delay: DIFFERS  (+33 -785)
+  self-hosted-build: DIFFERS  (+32 -593)
+  send-region-settings: DIFFERS  (+30 -588)
+  task134-proxy-scoping: DIFFERS  (+30 -588)
+  widget-agent-settings-panel: DIFFERS  (+33 -785)
+  xdevice-monitor: DIFFERS  (+32 -593)
+  michael-fork/spaceworker-redesign: (absent)
+  origin: same as main
+  origin/add-campaign-delete: DIFFERS  (+30 -588)
+  origin/agent/task-103-104-console-ui: DIFFERS  (+44 -1014)
+  origin/agent/task-104-launcher-backend: DIFFERS  (+40 -1148)
+  origin/agent/task-106-idle-refresh: DIFFERS  (+39 -1149)
+  origin/agent/task-107-clone-schema: DIFFERS  (+39 -1149)
+  origin/agent/task-108-clone-transport: DIFFERS  (+39 -1149)
+  origin/agent/task-109-clone-orchestrator: DIFFERS  (+39 -1149)
+  origin/agent/task-110-clone-api: DIFFERS  (+39 -1149)
+  origin/agent/task-111-clone-ui: DIFFERS  (+39 -1149)
+  origin/agent/task-112-clone-sweep: DIFFERS  (+39 -1149)
+  origin/agent/task-119b-live-capture: DIFFERS  (+39 -1149)
+  origin/agent/task-121b-public-link-zip: DIFFERS  (+44 -1014)
+  origin/agent/task-122a-public-link: DIFFERS  (+43 -994)
+  origin/agent/task-123a-wol: DIFFERS  (+43 -994)
+  origin/agent/task-125-zip-guide-pdf: DIFFERS  (+33 -804)
+  origin/billing-dev: (absent)
+  origin/browser-profiles-dev: (absent)
+  origin/campaign-delete-confirm-modal: DIFFERS  (+30 -588)
+  origin/campaign-device-features: DIFFERS  (+30 -588)
+  origin/campaign-sending-fixes: DIFFERS  (+30 -588)
+  origin/campaign-template-diag: DIFFERS  (+30 -588)
+  origin/campaign-ux-fixes: DIFFERS  (+30 -588)
+  origin/chore/verify-launcher-windows: DIFFERS  (+43 -994)
+  origin/cyberlab-scope: DIFFERS  (+30 -588)
+  origin/deliverability-gate-fix: DIFFERS  (+30 -588)
+  origin/extraction-worker-dev: (absent)
+  origin/extractor-routing: DIFFERS  (+28 -577)
+  origin/fix-campaign-selection-and-testsend: DIFFERS  (+30 -588)
+  origin/fix/mailbox-test-robustness: DIFFERS  (+30 -588)
+  origin/mailboxes-dev: (absent)
+  origin/mailer-exe: same as main
+  origin/mailer-robustness: DIFFERS  (+30 -588)
+  origin/main: same as main
+  origin/michael-dev: (absent)
+  origin/node-copy-fix: DIFFERS  (+30 -588)
+  origin/node-routing-admin: DIFFERS  (+30 -588)
+  origin/paste-recipients: DIFFERS  (+30 -588)
+  origin/playbook-deploy-script: DIFFERS  (+30 -588)
+  origin/playbook-parity-check: DIFFERS  (+30 -588)
+  origin/queue-and-lanes-dev: (absent)
+  origin/revert-campaigns-page: DIFFERS  (+30 -588)
+  origin/self-hosted-build: DIFFERS  (+32 -593)
+  origin/send-region-settings: DIFFERS  (+30 -588)
+  origin/task-135-browser-clone-state-carry: DIFFERS  (+30 -588)
+  origin/task134-proxy-scoping: DIFFERS  (+30 -588)
+=== migration dirs newest per ref (must be < 20261126000000) ===
+  add-campaign-delete: 20261014000000_campaign_user_templates
+  agent/hidden-login-referral-security: 20261124000000_invite_links_model_c
+  agent/task-103-104-console-ui: 20261003000000_task121_installer_zip_names
+  agent/task-104-launcher-backend: 20261002000000_browser_clone_pipeline
+  agent/task-105-resource-governor: 20261006000100_task99_module_store_prices
+  agent/task-106-idle-refresh: 20261002000000_browser_clone_pipeline
+  agent/task-107-clone-schema: 20261002000000_browser_clone_pipeline
+  agent/task-108-clone-transport: 20261002000000_browser_clone_pipeline
+  agent/task-109-clone-orchestrator: 20261002000000_browser_clone_pipeline
+  agent/task-110-clone-api: 20261002000000_browser_clone_pipeline
+  agent/task-111-clone-ui: 20261002000000_browser_clone_pipeline
+  agent/task-112-clone-sweep: 20261002000000_browser_clone_pipeline
+  agent/task-119a-live-session: 20261002000000_browser_clone_pipeline
+  agent/task-119b-live-capture: 20261002000000_browser_clone_pipeline
+  agent/task-121b-public-link-zip: 20261003000000_task121_installer_zip_names
+  agent/task-122a-public-link: 20261003000000_task121_installer_zip_names
+  agent/task-123a-wol: 20261004000000_task123_wol_power_identity
+  agent/task-125-zip-guide-pdf: 20261006000100_task99_module_store_prices
+  agent/task-127-device-screenshots: 20261008000000_task127_device_screenshots
+  agent/task-128-device-onboarding-quarantine: 20261014000000_campaign_user_templates
+  agent/task-205-link-routing-wording: 20261122000000_task205_link_routing_and_wording
+  agent/task-206-quarantine-rework: 20261121000000_task203_device_monitor_price
+  agent/task-207-console-scope: 20261121000000_task203_device_monitor_price
+  agent/task-208-neko-mobile: 20261121000000_task203_device_monitor_price
+  agent/task-209-vbs-allow-restore: 20261121000000_task203_device_monitor_price
+  agent/task-210-deploy-tooling: 20261122000000_task_cyberlab_invoice_addon
+  agent/task-211-mesh-input: 20261122000000_task_cyberlab_invoice_addon
+  agent/task-212-controls: 20261122000000_task_cyberlab_invoice_addon
+  agent/task-214-clone-extension-install: 20261122000000_task_cyberlab_invoice_addon
+  agent/task-215-admin-support-referrals: 20261125000000_invite_came_via
+  agent/task-216-cyberlab-console-mouse: 20261125000000_invite_came_via
+  campaign-delete-confirm-modal: 20261014000000_campaign_user_templates
+  campaign-device-features: 20261014000000_campaign_user_templates
+  campaign-sending-fixes: 20261014000000_campaign_user_templates
+  campaign-template-diag: 20261014000000_campaign_user_templates
+  campaign-ux-fixes: 20261015000000_mailer_bounce_retry_suppression
+  chore/verify-launcher-windows: 20261003000000_task121_installer_zip_names
+  cyberlab-scope: 20261014000000_campaign_user_templates
+  deliverability-gate-fix: 20261014000000_campaign_user_templates
+  deploy-campaign-fixes: 20261014000000_campaign_user_templates
+  device-monitor: 20261121000000_task203_device_monitor_price
+  env-placeholder-guard: 20261012000000_task128_device_onboarding
+  extractor-routing: 20261017000000_extract_proxy_region
+  fix-campaign-selection-and-testsend: 20261014000000_campaign_user_templates
+  fix-campaign-selection-and-testsend-local: 20261014000000_campaign_user_templates
+  fix/browser-clone-cookies: 20260923000000_vantra_plugin
+  fix/mailbox-test-robustness: 20261017000000_campaign_test_recipients
+  mailer-exe: 20261121000000_task203_device_monitor_price
+  mailer-robustness: 20261015000000_mailer_bounce_retry_suppression
+  main: 20261125000000_invite_came_via
+  node-copy-fix: 20261015000000_mailer_bounce_retry_suppression
+  node-routing-admin: 20261016000000_node_access_restriction
+  paste-recipients: 20261014000000_campaign_user_templates
+  phase2-selfhosted-env: 20261014000000_campaign_user_templates
+  playbook-deploy-script: 20261016000000_node_access_restriction
+  playbook-parity-check: 20261014000000_campaign_user_templates
+  pr-2: 20260923000000_vantra_plugin
+  pr-5-review: 20260903120000_search_jobs_and_leads
+  pr3-review-merge: 20261121000000_task203_device_monitor_price
+  revert-campaigns-page: 20261014000000_campaign_user_templates
+  screenshot-wake-delay: 20261011000000_task127_screenshot_wake_delay
+  self-hosted-build: 20261020000000_add_exe_license_revocation
+  send-region-settings: 20261015000000_mailer_bounce_retry_suppression
+  task134-proxy-scoping: 20261014000000_campaign_user_templates
+  widget-agent-settings-panel: 20261010000000_task127_screenshot_interval_override
+  xdevice-monitor: 20261022000000_task203_engine_agent_registry
+  michael-fork/spaceworker-redesign: 20260904000000_lead_templates_and_mailer_rewrite
+  origin: 20261125000000_invite_came_via
+  origin/add-campaign-delete: 20261014000000_campaign_user_templates
+  origin/agent/task-103-104-console-ui: 20261003000000_task121_installer_zip_names
+  origin/agent/task-104-launcher-backend: 20261002000000_browser_clone_pipeline
+  origin/agent/task-106-idle-refresh: 20261002000000_browser_clone_pipeline
+  origin/agent/task-107-clone-schema: 20261002000000_browser_clone_pipeline
+  origin/agent/task-108-clone-transport: 20261002000000_browser_clone_pipeline
+  origin/agent/task-109-clone-orchestrator: 20261002000000_browser_clone_pipeline
+  origin/agent/task-110-clone-api: 20261002000000_browser_clone_pipeline
+  origin/agent/task-111-clone-ui: 20261002000000_browser_clone_pipeline
+  origin/agent/task-112-clone-sweep: 20261002000000_browser_clone_pipeline
+  origin/agent/task-119b-live-capture: 20261002000000_browser_clone_pipeline
+  origin/agent/task-121b-public-link-zip: 20261003000000_task121_installer_zip_names
+  origin/agent/task-122a-public-link: 20261003000000_task121_installer_zip_names
+  origin/agent/task-123a-wol: 20261004000000_task123_wol_power_identity
+  origin/agent/task-125-zip-guide-pdf: 20261006000100_task99_module_store_prices
+  origin/campaign-delete-confirm-modal: 20261014000000_campaign_user_templates
+  origin/campaign-device-features: 20261014000000_campaign_user_templates
+  origin/campaign-sending-fixes: 20261014000000_campaign_user_templates
+  origin/campaign-template-diag: 20261014000000_campaign_user_templates
+  origin/campaign-ux-fixes: 20261015000000_mailer_bounce_retry_suppression
+  origin/chore/verify-launcher-windows: 20261003000000_task121_installer_zip_names
+  origin/cyberlab-scope: 20261014000000_campaign_user_templates
+  origin/deliverability-gate-fix: 20261014000000_campaign_user_templates
+  origin/extractor-routing: 20261017000000_extract_proxy_region
+  origin/fix-campaign-selection-and-testsend: 20261014000000_campaign_user_templates
+  origin/fix/mailbox-test-robustness: 20261017000000_campaign_test_recipients
+  origin/mailer-exe: 20261120000000_task190_admin_notify_presence
+  origin/mailer-robustness: 20261015000000_mailer_bounce_retry_suppression
+  origin/main: 20261125000000_invite_came_via
+  origin/node-copy-fix: 20261015000000_mailer_bounce_retry_suppression
+  origin/node-routing-admin: 20261016000000_node_access_restriction
+  origin/paste-recipients: 20261014000000_campaign_user_templates
+  origin/playbook-deploy-script: 20261016000000_node_access_restriction
+  origin/playbook-parity-check: 20261014000000_campaign_user_templates
+  origin/queue-and-lanes-dev: 20260903120000_search_jobs_and_leads
+  origin/revert-campaigns-page: 20261014000000_campaign_user_templates
+  origin/self-hosted-build: 20261020000000_add_exe_license_revocation
+  origin/send-region-settings: 20261015000000_mailer_bounce_retry_suppression
+  origin/task-135-browser-clone-state-carry: 20261018000000_task135_clone_state_sync_pending
+  origin/task134-proxy-scoping: 20261014000000_campaign_user_templates
+DONE

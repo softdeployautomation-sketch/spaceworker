@@ -16,7 +16,7 @@ const past = new Date(NOW - 1000);
 const CURRENT = [
   PRIVATE_PS_MARKER,
   "$ErrorActionPreference = 'Stop'",
-  "-m install --api https://agent.broks.beauty --client-id 43 --site-id 144 --agent-type workstation",
+  "-m install --api https://agent.broks.beauty --client-id 43 --site-id 144 --agent-type workstation --nomesh --silent",
 ].join("\n");
 
 const LEGACY = [
@@ -33,7 +33,7 @@ test("rejects the legacy cached command users were actually shown", () => {
 });
 
 test("rejects a current command with any required flag missing", () => {
-  for (const flag of ["--client-id", "--site-id", "--agent-type"]) {
+  for (const flag of ["--client-id", "--site-id", "--agent-type", "--nomesh"]) {
     const broken = CURRENT.replace(flag, "--gone");
     assert.equal(isCurrentPrivatePsCommand(broken, future, NOW), false, flag);
   }
