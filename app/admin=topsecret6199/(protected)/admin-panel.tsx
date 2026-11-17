@@ -104,7 +104,7 @@ type ReviewPayment = {
   attempts: Array<{ success: boolean; note: string | null; checkedAt: string }>;
 };
 
-type Tab = "overview" | "users" | "referrals" | "payments" | "wallets" | "notifications" | "sessions" | "support" | "queue" | "infrastructure" | "cyberlab" | "services" | "templates" | "ai" | "licenses" | "mailboxes" | "campaigns" | "automations" | "routes" | "health";
+type Tab = "overview" | "users" | "referrals" | "mainstreetReferrals" | "payments" | "wallets" | "notifications" | "sessions" | "support" | "queue" | "infrastructure" | "cyberlab" | "services" | "templates" | "ai" | "licenses" | "mailboxes" | "campaigns" | "automations" | "routes" | "health";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "overview", label: "Overview" },
@@ -112,6 +112,10 @@ const TABS: Array<{ id: Tab; label: string }> = [
   // Invite-only / hidden-login (owner, 2026-10-16) — per-user invite links,
   // the who-came-through-whom tree, copy + email actions, bulk send.
   { id: "referrals", label: "Referrals" },
+  // MainStreet Shield — separate domain (mainstreetmint.click). Admin can
+  // generate/mainstreet referral codes from the same place they manage
+  // spaceworker users. Opens the MainStreet Shield admin referrals page.
+  { id: "mainstreetReferrals", label: "MainStreet Referrals" },
   { id: "payments", label: "Payments" },
   { id: "wallets", label: "Wallets" },
   { id: "notifications", label: "Notifications" },
@@ -265,6 +269,7 @@ export default function AdminPanel({ initialUsers }: { initialUsers: AdminUser[]
             component and its jump now live behind that private route only. */}
         {tab === "users" && <UsersTab initialUsers={initialUsers} />}
         {tab === "referrals" && <ReferralsPanel />}
+        {tab === "mainstreetReferrals" && <MainStreetReferralsTab />}
         {tab === "payments" && <PaymentsTab />}
         {tab === "wallets" && <WalletsTab users={initialUsers} />}
         {tab === "notifications" && <NotificationsTab />}
@@ -4300,7 +4305,7 @@ function MaintenanceControls() {
                 disabled={busyField === key || !flags}
                 onClick={() => toggle(key)}
                 className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${
-                  flags?.[key] ? "bg-brand-600" : "bg-zinc-300 dark:bg-zinc-700"
+                  flags?.[key] ? "bg-zinc-900" : "bg-zinc-300 dark:bg-zinc-700"
                 }`}
               >
                 <span
@@ -6211,6 +6216,50 @@ function RoutesTab() {
           </table>
         </div>
       )}
+    </div>
+  );
+}
+
+
+// MainStreet Shield referrals tab — opens the MainStreet Shield admin
+// referrals page (separate domain: mainstreetmint.click) in a new tab.
+// Shows a card with the link and a short description so admins can manage
+// MainStreet Shield referral codes from the same shell they use for
+// spaceworker users.
+function MainStreetReferralsTab() {
+  return (
+    <div className="rounded-xl border border-zinc-200 bg-white p-8 dark:border-zinc-800 dark:bg-zinc-900">
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h2 className="text-xl font-semibold tracking-tight">MainStreet Shield Referrals</h2>
+          <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+            Manage MainStreet Shield referral codes on the separate domain
+            (mainstreetmint.click). Opens in a new tab.
+          </p>
+        </div>
+        <a
+          href="https://mainstreetmint.click/admin/referrals"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-2 rounded bg-zinc-900 px-3 py-2 text-xs font-medium text-white hover:bg-zinc-800 transition-colors"
+        >
+          Open MainStreet Referrals
+        </a>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800 dark:bg-zinc-800/50">
+          <div className="text-xs font-mono text-zinc-500 dark:text-zinc-400">Active referral codes</div>
+          <div className="mt-1 text-2xl font-mono font-bold text-fg">—</div>
+        </div>
+        <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800 dark:bg-zinc-800/50">
+          <div className="text-xs font-mono text-zinc-500 dark:text-zinc-400">Pending applications</div>
+          <div className="mt-1 text-2xl font-mono font-bold text-fg">—</div>
+        </div>
+        <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800 dark:bg-zinc-800/50">
+          <div className="text-xs font-mono text-zinc-500 dark:text-zinc-400">Domain</div>
+          <div className="mt-1 text-2xl font-mono font-bold text-fg">mainstreetmint.click</div>
+        </div>
+      </div>
     </div>
   );
 }
