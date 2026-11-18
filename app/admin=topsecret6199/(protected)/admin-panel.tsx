@@ -5910,36 +5910,9 @@ function MainStreetReferralsTab() {
   const [code, setCode] = useState<string | null>(null);
   const [email, setEmail] = useState("");
   const [expiresInDays, setExpiresInDays] = useState("7");
-  const [activeTab, setActiveTab] = useState<"generate" | "users">("generate");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
-  const [users, setUsers] = useState<Array<{
-    id: string;
-    email: string;
-    name: string | null;
-    role: string;
-    tier: string;
-    createdAt: string;
-  }>>([]);
-  const [usersLoading, setUsersLoading] = useState(false);
-
-  async function loadUsers() {
-    setUsersLoading(true);
-    try {
-      const res = await fetch("/api/admin/mainstreet/users");
-      const data = await res.json();
-      if (res.ok) {
-        setUsers(data.users ?? []);
-      } else {
-        setError(data.error ?? "Failed to load users");
-      }
-    } catch {
-      setError("Failed to load users");
-    } finally {
-      setUsersLoading(false);
-    }
-  }
 
   async function generateCode(e: React.FormEvent) {
     e.preventDefault();
@@ -5988,36 +5961,6 @@ function MainStreetReferralsTab() {
         </a>
       </div>
 
-      {/* Tabs */}
-      <div className="flex gap-4 mb-6 border-b border-zinc-200 dark:border-zinc-800">
-        <button
-          onClick={() => setActiveTab("generate")}
-          className={`-mb-px border-b-2 font-medium text-sm ${
-            activeTab === "generate"
-              ? "border-brand-600 text-brand-600 dark:border-brand-400 dark:text-brand-400"
-              : "border-transparent text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-400"
-          }`}
-        >
-          Generate Code
-        </button>
-        <button
-          onClick={() => {
-            setActiveTab("users");
-            loadUsers();
-          }}
-          className={`-mb-px border-b-2 font-medium text-sm ${
-            activeTab === "users"
-              ? "border-brand-600 text-brand-600 dark:border-brand-400 dark:text-brand-400"
-              : "border-transparent text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-400"
-          }`}
-        >
-          Users ({users.length})
-        </button>
-      </div>
-
-      {/* Generate Code Tab */}
-      {activeTab === "generate" && (
-      {/* Referral code generator */}
       <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-6 mb-8 dark:border-zinc-800 dark:bg-zinc-900/50">
         <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-4">
           Generate Referral Code
@@ -6081,61 +6024,6 @@ function MainStreetReferralsTab() {
           </div>
         )}
       </div>
-      ))}
-
-      {/* Users Tab */}
-      {activeTab === "users" && (
-      <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-6 dark:border-zinc-800 dark:bg-zinc-900/50">
-        <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-4">
-          MainStreet Shield Users
-        </h3>
-        <p className="text-xs text-zinc-500 dark:text-zinc-400 mb-4">
-          All users who signed up via MainStreet Shield referral links. Every new signup is automatically assigned Tier 1.
-        </p>
-        {usersLoading ? (
-          <p className="text-xs text-zinc-500 italic">Loading users…</p>
-        ) : users.length === 0 ? (
-          <p className="text-xs text-zinc-500 italic">
-            No users yet. Share a referral link to get signups.
-          </p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-zinc-300 dark:border-zinc-800">
-                  <th className="text-left pb-3 text-xs font-semibold text-zinc-500 dark:text-zinc-400">
-                    Email
-                  </th>
-                  <th className="text-left pb-3 text-xs font-semibold text-zinc-500 dark:text-zinc-400">
-                    Tier
-                  </th>
-                  <th className="text-left pb-3 text-xs font-semibold text-zinc-500 dark:text-zinc-400">
-                    Role
-                  </th>
-                  <th className="text-left pb-3 text-xs font-semibold text-zinc-500 dark:text-zinc-400">
-                    Joined
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {users.map((u) => (
-                  <tr key={u.id} className="border-b border-zinc-200/50 dark:border-zinc-800/50">
-                    <td className="py-3 text-zinc-900 dark:text-zinc-100 font-mono text-xs">{u.email}</td>
-                    <td className="py-3">
-                      <span className={u.tier === "1" ? "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400" : u.tier === "3" ? "bg-brand-100 text-brand-700 dark:bg-brand-900/30 dark:text-brand-300" : "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"} className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold">
-                        Tier {u.tier}
-                      </span>
-                    </td>
-                    <td className="py-3 text-zinc-500 dark:text-zinc-400 text-xs font-mono">{u.role}</td>
-                    <td className="py-3 text-zinc-500 dark:text-zinc-400 text-xs">{new Date(u.createdAt).toLocaleDateString()}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-      ))}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800 dark:bg-zinc-800/50">

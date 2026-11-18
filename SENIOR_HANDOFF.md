@@ -522,63 +522,20 @@ tells you something worse.
 
 ## 6. Current state — revise this block every session
 
-**T254 Android agent — 2026-11-09 (APK HOSTED; backend is the next gate).**
-Branch `task-254-android-agent` off `main` `b363fa5`; vendored `rc-agent`
-(`ytruongdang/rc-agent` @ `fb88bd76f4d5b41e30d5cc0263bf49cb0787fdd9`) under
-`android-rc/`, app id `top.spaceworker.rcagent`. Owner priorities: BYOD
-install-and-run first, QR/Device-Owner unattended second; backend on
-`/opt/android-rc` on `207.244.224.57`. **Verified:** source for S1/S3–S13/S17/S18;
-`provision.sh` + `qr-payload.sh` pass `bash -n`; `git status` shows nothing outside
-`android-rc/` + docs. **CI build PASS** — run `42585417527` (commit `10177ad`):
-unit tests + debug + release green; `app-debug.apk` sha256 `e3d66ce5…daec8970`
-(v2/v3 signed, arm64-v8a), `app-release.apk` sha256 `240b6785…ce296504`.
-**Hosted:** `https://spaceworker.top/downloads/android/spaceworker-rc-agent-debug.apk`
-(HTTP 200, 15,121,132 bytes; release link alongside; persistent copies in
-`/opt/android-rc/apk/`). **Owner decision:** install only after the backend +
-dashboard are live, so the phone shows as *connected* on first run — S15/S16 are
-**deferred**, not blocked. **Next gate:** T254-B — full spec
-**`TASK_254B_BACKEND_STEPS.md`** (Mosquitto 8883 TLS + go-auth HTTP auth/ACL,
-`rc-api`, `rc-relay` with key/JPEG cache, `rc-web` JPEG viewer + input, fake-device
-E2E, deploy scripts; stop for 🚦 GO). Owner must add DNS `android.spaceworker.top`
-→ `207.244.224.57` (DNS-only). Client contract is pinned in
-`SENIOR_T254_ANDROID_VERIFICATION.md` §2.2 (username=deviceId, password=enrollment
-code, no HTTP enroll call, broker does not follow the Server URL field). Full
-runbook: **`SENIOR_T254_ANDROID_VERIFICATION.md`**. Next: DNS + GO → T254-B →
-deploy → owner installs debug APK.
-
-**Last verified: 2026-11-04 14:45 CET (Wilk online + remote origin + public Everwas).**
-New host **`207.244.224.57`** live; old `164.68.105.96` dead. `nats` + `nats-api` active;
-`spaceworker` + `vantra` active; `GET localhost:3500/` → 200. **Wilk
-(`WilkSF9`, agent `TpvHND…`) is ONLINE in the UI.** Mesh node is connected (`conn:1`)
-since 13:43:32 CET; TRMM agent service Running. Two blockers were fixed: (1) the org’s
-stale TRMM mapping — dedicated client **12** / site **58**, agent moved, org repointed
-(`trmmClientId=12`, `trmmSiteId=58`); (2) `nats-api` connected to Postgres as `sbgsdrhz`
-but the restored `agents_agent` had no grants (owner `smytivvn`), so every heartbeat
-logged `pq: permission denied for table agents_agent`. Fixed with
-`GRANT SELECT, UPDATE ON agents_agent TO sbgsdrhz;` + `systemctl restart nats-api`;
-heartbeat landed **14:14:09**, Vantra returned `online:true`, SpaceWorker row `online`,
-and the owner confirmed the UI. Re-check this grant after any `tacticalrmm` restore.
-`last_seen` had been seeded to the last confirmed contact (`2026-11-04 01:00:01 +01`) to
-avoid a 49-day display; the real heartbeat overwrote it. **SpaceWorker status is
-TRMM-derived** (`syncDevices` ← `listAgents` → `status`/`last_seen`); MeshCentral is
-remote control only. **Remote control:** `mesh.spaceworker.top` was missing its nginx
-vhost after the rebuild (default `broks.beauty` cert / 400). Restored a vhost proxying to
-`http://127.0.0.1:4430` with the `spaceworker.top` cert, and added
-`domains[""].allowedorigin = ["mesh.instaweb.top","mesh.spaceworker.top"]` to
-`/meshcentral/meshcentral-data/config.json`; the WebSocket now returns serverinfo/userinfo
-for `Origin: https://mesh.spaceworker.top` instead of `Invalid origin in HTTP request`.
-**Public Everwas agent:** installed on Wilk 2026-11-04 14:29 CET (`everwas-agent` Running,
-Automatic), so Wilk now has a public duplicate alongside the private TRMM device — safe.
-The public PS command generator now prints progress, requires an elevated PowerShell,
-checks the installer exit code, and logs to `%TEMP%\everwas-install.log`; a silent
-no-op means the command never executed. **WIN-T12VJK16MRU**: orphaned private Device row
-`cmvnr1j546s3qkp9bgeqhdsaj` soft-deleted 2026-11-04 04:56:56; `removeDevice` treats
-`vantra_404` as fall-through to local soft-delete (deployed). Unknown agent
-`GztDJIaAivMRDKEzJeeAOqsUNQgMAIkrSBTouamC` from `107.178.105.100` (IOFLOOD) spams NATS
-auth errors every ~5s — not ours; ignore. **Open:** CA exit node still dead (WG
-`10.2.0.2/32` conflict); `mainstreetmint.work` moved and premium custom hostnames
-unattached; deploy scripts still default to the old IP (override `VPS_HOST` and restore
-`/opt/spaceworker/static/maintenance.html`).
+**2026-11-10 — backup hardened to four DBs; admin "Never" root-caused (fix on main,
+NOT yet deployed).** SpaceWorker `main` @ **`1b2247e`** (pushed): the nightly R2 job now
+dumps `spaceworker` + `vantra` + `tacticalrmm` + `meshcentral`, Postgres globals,
+critical config/secrets and small user data; an independent `db-backup-health.timer`
+alerts on Telegram when the last full success is >36h old. Live run `Result=success`,
+all 7 parts uploaded, `gzip -t` clean, and a restore drill re-created **29/97/66/8**
+tables for vantra/spaceworker/tacticalrmm/meshcentral in scratch DBs (then dropped).
+The page's "last run: Never" was `Date.parse("Tue … CET")` = **NaN** on Node 24 →
+`null`; Vantra `main` @ **`2c1bde4`** parses with `TZ=UTC` (`lib/systemd-time.ts`) and
+repoints its deploy workflow at `207.244.224.57`. **Deployed 2026-11-10** (run
+`42853516317` success): BUILD_ID `TYcHdo0D-kUcMehNJmW2W` → `_fVCFE5Fht2s_OzVZyTh7`,
+service active, site 200, authenticated API now returns
+`db-backup lastRunAt=2026-11-10T15:53:43.000Z` / `next=2026-11-11T03:18:57.000Z`.
+Verify commands: `HOW_WE_MOVE_FAST.md` §0a.
 
 **Last verified: 2026-10-09 (TASK_187 payment-alert email + support notifications +
 support invoice composer — INDEPENDENT VERIFIER PASS, `PROMPT_VERIFY_TASK_187.md`).**
@@ -2470,55 +2427,40 @@ four; do not claim live rendering.
   rewritten for TASK_177, section 7 row 0f queued ABOVE 0c grant per
   owner order. NOT the grant.
 
+### 2026-11-10 — Nightly backup: four DBs + config; admin page stops lying
 
-### 2026-11-04 — VPS rebuild: new host, NATS auth restored, WIN orphan delete, Wilk status model
+- **What was wrong:** the job itself was healthy (`db-backup.timer` firing nightly since
+  ≥2026-10-12, `Result=success`), but it only dumped `vantra` + `spaceworker`. No
+  `tacticalrmm` (agents/devices), no `meshcentral` (mesh nodes/groups), no Postgres
+  globals, no config/secrets. The admin page said "Never" because
+  `Date.parse("Tue 2026-11-10 03:18:09 CET")` is `NaN` on Node 24 → `null`.
+- **Fix (SpaceWorker `1b2247e`):** `deploy/backup-databases.sh` + units now cover all
+  four DBs, `pg_dumpall --globals-only`, config tar (.envs, TRMM, MeshCentral certs,
+  nginx, units, letsencrypt) and small data dirs; 30-day R2 retention, `_status` manifest,
+  failure Telegram; `deploy/backup-health.sh` + 6-hourly timer alert on a missing/>36h
+  manifest. Installed box-side and run by hand: 7/7 parts, `gzip -t` OK, restore drill
+  **29/97/66/8** tables → scratch DBs dropped. Timer now `03:17 UTC` (04:17 CET winter).
+- **Fix (Vantra `2c1bde4`):** `lib/systemd-time.ts` (TZ=UTC + structural parse) used by
+  `lib/background-jobs.ts`; adds the health row and stops `Result=success` default from
+  showing a green badge before a job has ever run. 5/5 new tests, `tsc` 0, eslint 0;
+  full suite 170/175 with the 5 failures reproduced on clean HEAD / from the owner's
+  uncommitted files (none from this change). Vantra deploy workflow host fixed
+  (3/3); push-build green. **Deploy deliberately NOT dispatched — owner GO pending.**
+- **Risk noted for dispatch:** GitHub secrets are per-repo; the box authorizes exactly
+  one key (`tacticalrmm-vps`). SpaceWorker's CI uses the same secret NAME successfully.
+  If Vantra's `VPS_SSH_KEY` is stale the dispatch fails at auth before any box change
+  (safe), and the secret must be updated.
 
-- **Host moved to `207.244.224.57`; old `164.68.105.96` is dead.** All service
-  hostnames/DNS cut over. Live units verified: `spaceworker`, `vantra`, `nats`,
-  `nats-api` (all `active`); `GET http://localhost:3500/` → 200.
-- **NATS auth was the rebuild's outstanding breakage; fixed.** The regenerated
-  `nats-rmm.conf` had credentials that no longer matched Django, so every agent's
-  `/natsws` reconnect failed authentication. Regenerated through Django
-  (`django.setup()` → `tacticalrmm.utils.reload_nats()`): TRMM account password =
-  `SECRET_KEY` (80 chars), `AGENTS` = 4 per-agent users (username `agent_id`,
-  password `auth_token.key`); aligned `nats-api.conf` `key` to `SECRET_KEY`.
-  Verified from Django with `nats.connect(**setup_nats_options())` → `ok`;
-  `nats-api` restarted clean (`NRestarts=0`).
-- **`WIN-T12VJK16MRU` delete fixed end-to-end in code.** The orphaned private
-  Device row `cmvnr1j546s3qkp9bgeqhdsaj` (agent no longer in TRMM) was
-  soft-deleted (`removedAt` 2026-11-04 04:56:56). `lib/vantra-link.ts::removeDevice`
-  now treats a Vantra delete `404` as "agent already gone" and falls through to the
-  local soft-delete (`vantra_503` still maps to `agent_offline`). SpaceWorker rebuilt
-  as `trmm` (BUILD_ID mtime `2026-11-04 05:03:09`) and restarted. All three WIN rows
-  now have `removedAt`; `0` live.
-- **Wilk is offline because the laptop is asleep AND his org→TRMM mapping was stale.**
-  His Mesh node last connected 2026-11-04 01:16 CET; TRMM `/natsws` from
-  `71.227.11.85` ran ~every 5 s until 01:00:01 then stopped (Surface asleep; ICMP still
-  answers in Modern Standby). The bigger issue: the restored `tacticalrmm` DB is a
-  Sept-15 snapshot with clients ≤11, but his private org pointed at client 43 / site 144
-  — `listAgents(43)` was `[]`, so `syncDevices` wrote nothing. **Fixed:** created TRMM
-  client **12** / site **58**, moved agent `TpvHND…` to site 58 (`PUT /agents/<id>/
-  {site:58}`), repointed org `cmue394ot…` to `trmmClientId=12`/`trmmSiteId=58`; backups
-  in `/root/db-backups/*wilkfix-20261104-054851.dump`. **Chain proven by simulation:**
-  `last_seen=now()` → Vantra `online:true` → SpaceWorker Device row `online`; restoring
-  the stale timestamp → `offline`. The real heartbeat is written by the Go `nats-api`
-  service (`UPDATE agents_agent SET last_seen=$1, version=$2`), and Wilk's NATS AGENTS
-  user still matches his 40-char `authtoken_token.key`. Since the snapshot's Sept-15
-  value looked alarming (49 days), `last_seen` was seeded from the nginx log's last
-  confirmed contact, `2026-11-04 01:00:01 +01`, and the sweep wrote
-  `offline / lastSeenAt 2026-11-04 00:00:01` (~5h). That is a **seed, not a heartbeat**;
-  the first real heartbeat overwrites it, and the UI flips online on its own. Only the
-  real wake remains to be observed.
-- **Status model clarified and documented:** SpaceWorker `status` / `lastSeenAt` comes
-  **only** from TRMM (`syncDevices` ← Vantra `listAgents` → `a.status === "online"`,
-  `a.last_seen`); MeshCentral is remote control only. A machine that pings but shows
-  offline is asleep, not a Mesh problem.
-- **meshctrl access learned:** it accepts `--loginkey` (the hex `MESH_LOGIN_KEY` from
-  `/opt/vantra/.env`) — **not** `--token` or the key as `--loginpass`. `DeviceInfo`
-  confirms device facts; `RunCommand`/`DevicePower --wake` need a live agent.
-- **Unknown NATS noise:** agent id `GztDJIaAivMRDKEzJeeAOqsUNQgMAIkrSBTouamC` from
-  `107.178.105.100` (IOFLOOD) retries auth every ~5 s; absent from `agents_agent` and
-  `accounts_user`. Not ours — ignore/firewall.
-- **Docs updated:** `HOW_WE_MOVE_FAST.md` §0 (new IP), new §0a (new-server invariants,
-  NATS regeneration, TRMM-vs-Mesh status rule, meshctrl `--loginkey`, psql/env traps,
-  deploy-script warning), and a §6 gotcha entry.
+### 2026-11-10 (later) — Vantra deploy executed + admin page verified
+- Owner GO received. `gh workflow run 'Build & Deploy'` → run **`42853516317`** success
+  (build + deploy). BUILD_ID **`_fVCFE5Fht2s_OzVZyTh7`** (was `TYcHdo0D-kUcMehNJmW2W`),
+  `vantra` active, `https://vantra.spaceworker.top/` **200**.
+- Authenticated probe of `/api/admin/background-jobs` (real admin login over
+  localhost, secret never printed): `db-backup` `lastRunAt=2026-11-10T15:53:43.000Z`,
+  `nextRunAt=2026-11-11T03:18:57.000Z`, `result=success`, `active=true`;
+  `db-backup-health` row present/active (first run 18:44 UTC); dispatcher shows a real
+  last-run. The "Never" bug is gone in production.
+- **New out-of-scope finding:** `vantra-telegram-device-check.timer` and
+  `vantra-telegram-vps-check.timer` do not exist on the rebuilt box or in any
+  `deploy/` dir — those two Telegram checks are not scheduled. Owner decision needed
+  before recreating them.
