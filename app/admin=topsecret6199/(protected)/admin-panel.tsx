@@ -2896,6 +2896,18 @@ function HostingCapsPanel() {
 
 
 
+type VantraLinkRow = {
+  id: string;
+  email: string;
+  orgId: string;
+  orgName: string;
+  status: string;
+  deviceCount: number;
+  lastSyncedAt: string | null;
+  lastError: string | null;
+  createdAt: string;
+};
+
 function VantraLinksPanel() {
   const [links, setLinks] = useState<VantraLinkRow[] | null>(null);
   const [error, setError] = useState("");
