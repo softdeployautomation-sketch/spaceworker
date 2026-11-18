@@ -13,8 +13,7 @@ import SupportQueuePanel from "@/components/admin/support-queue-panel";
 import { HealthPanel } from "@/components/admin/health-panel";
 import WalletGrantPanel from "@/components/admin/wallet-grant-panel";
 import { UserInvoiceCell } from "@/components/admin/user-invoice-cell";
-import { CyberLabAccessCell } from "@/components/admin/cyberlab-access-cell";
-import { CyberLabGuide } from "@/components/admin/cyberlab-guide";
+
 import { ReferralsPanel } from "@/components/admin/referrals-panel";
 
 type AdminUser = {
@@ -104,7 +103,7 @@ type ReviewPayment = {
   attempts: Array<{ success: boolean; note: string | null; checkedAt: string }>;
 };
 
-type Tab = "overview" | "users" | "referrals" | "mainstreetReferrals" | "payments" | "wallets" | "notifications" | "sessions" | "support" | "queue" | "infrastructure" | "cyberlab" | "services" | "templates" | "ai" | "licenses" | "mailboxes" | "campaigns" | "automations" | "routes" | "health";
+type Tab = "overview" | "users" | "referrals" | "mainstreetReferrals" | "payments" | "wallets" | "notifications" | "sessions" | "support" | "queue" | "infrastructure" | "services" | "templates" | "ai" | "licenses" | "mailboxes" | "campaigns" | "automations" | "routes" | "health";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "overview", label: "Overview" },
@@ -140,7 +139,7 @@ const TABS: Array<{ id: Tab; label: string }> = [
   // (pinned ATT&CK release, feed list, refresh/stale cadence, LabToolCatalog
   // currency), and ALL lab runs + §5.2 refusals. Grouped so the owner can track
   // the whole product from a single tab.
-  { id: "cyberlab", label: "Cyber Lab" },
+
   { id: "services", label: "Services" },
   { id: "templates", label: "Campaign Templates" },
   { id: "ai", label: "AI" },
@@ -277,7 +276,7 @@ export default function AdminPanel({ initialUsers }: { initialUsers: AdminUser[]
         {tab === "support" && <SupportQueuePanel />}
         {tab === "queue" && <QueueTab />}
         {tab === "infrastructure" && <InfrastructureTab />}
-        {tab === "cyberlab" && <CyberLabAdminTab />}
+
         {tab === "services" && <ServicesTab />}
         {tab === "templates" && <CampaignTemplatesTab />}
         {tab === "ai" && <AiTab />}
@@ -416,7 +415,7 @@ function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
         {(
           [
             { tab: "infrastructure" as Tab, label: "Infrastructure", hint: "Governor, admission, clone limits, hosting limits, worker, Vantra links" },
-            { tab: "cyberlab" as Tab, label: "Cyber Lab", hint: "Cyber Lab limits, research gate, and all lab runs" },
+
             { tab: "wallets" as Tab, label: "Wallets & Prices", hint: "Admin-editable pricing for every product" },
             { tab: "notifications" as Tab, label: "Notifications", hint: "Every attempted send, most recent first" },
             { tab: "users" as Tab, label: "Users", hint: "Tiers, trial usage, premium grants" },
@@ -698,10 +697,7 @@ function UsersTab({ initialUsers }: { initialUsers: AdminUser[] }) {
                 </td>
                 {/* TASK_156B V2 — Cyber Lab is its own product (off Premium Plus):
                     the owner's allow/restrict toggle per user. Talks to the
-                    existing /api/admin/users/[id]/entitlements route (key:cyberlab). */}
-                <td className="px-4 py-3">
-                  <CyberLabAccessCell userId={user.id} />
-                </td>
+
                 {/* TASK_184 B3 — send/edit a premium-plan invoice for this user.
                     All logic lives in UserInvoiceCell (lazy fetch on expand). */}
                 <td className="px-4 py-3">
@@ -2900,298 +2896,6 @@ function HostingCapsPanel() {
 
 
 
-// TASK_156 C1 (scaffolding, owner 2026-10-01) — the Cyber Lab admin dials.
-//
-// The owner was explicit: "all caps for the workers and cyberlab … available for
-// edit in admin" and "if it's going to take a lot of ram … we need every hard load
-// monitored and queued properly". So the RAM envelope (rangeRamMb,
-// hostRamBudgetMb) is a first-class dial here, editable live, for the resource
-// governor (TASK_105) to queue against once the heavy tooling lands. Nothing reads
-// these yet — the lab models do not exist — so this panel changes no behaviour; it
-// exists so the owner can set the load envelope before the lab ships.
-type CyberLabCaps = {
-  freeMaxConcurrentRanges: number;
-  freeMaxRangeMinutes: number;
-  rangeRamMb: number;
-  hostRamBudgetMb: number;
-  maxTargetsPerScenario: number;
-  maxTargetsPerUser: number;
-  maxEpisodesPerMonth: number;
-  maxRunsPerDay: number;
-  modulePriceUsd: number;
-  toolStaleAfterDays: number;
-  researchRefreshDays: number;
-  sentinelDnsQueriesPerMinute: number;
-  sentinelEntropyThreshold: number;
-  sentinelFreezeOnRefusals: number;
-  consentTermsVersion: string;
-};
-
-type CyberLabCapsState = {
-  enabled: boolean;
-  caps: CyberLabCaps;
-};
-
-type CyberLabCapField = keyof CyberLabCaps;
-
-const CYBERLAB_CAP_ROWS: Array<{
-  field: CyberLabCapField;
-  label: string;
-  unit: string;
-  hint: string;
-  money?: boolean;
-  /** A string dial (the AUP version) renders a text input, not a number one. */
-  text?: boolean;
-}> = [
-  {
-    field: "freeMaxConcurrentRanges",
-    label: "Concurrent ranges (per user)",
-    unit: "ranges",
-    hint: "How many isolated lab ranges one user may hold active at once.",
-  },
-  {
-    field: "freeMaxRangeMinutes",
-    label: "Max range duration",
-    unit: "minutes",
-    hint: "Hard TTL before a range is torn down — the safety backstop.",
-  },
-  {
-    field: "rangeRamMb",
-    label: "RAM per range",
-    unit: "MB",
-    hint: "Reserved for each range host — the scarce resource the governor queues against.",
-  },
-  {
-    field: "hostRamBudgetMb",
-    label: "Host RAM budget",
-    unit: "MB",
-    hint: "Total RAM the lab may use across all users. Set below the host's real headroom.",
-  },
-  {
-    field: "maxTargetsPerScenario",
-    label: "Attested targets per scenario",
-    unit: "targets",
-    hint: "Cap on authorised targets per scenario — the legal spine.",
-  },
-  {
-    field: "maxTargetsPerUser",
-    label: "Attested targets per user",
-    unit: "targets",
-    hint: "Total attested inventory one user may hold across all scenarios (§5.2.1).",
-  },
-  {
-    field: "maxEpisodesPerMonth",
-    label: "Episodes per month (per user)",
-    unit: "episodes",
-    hint: "Evidence bundles a user may produce per month.",
-  },
-  {
-    field: "maxRunsPerDay",
-    label: "Runs per day (per user)",
-    unit: "runs",
-    hint: "Lab runs one user may start per calendar day.",
-  },
-  {
-    field: "toolStaleAfterDays",
-    label: "Tool currency window",
-    unit: "days",
-    hint: "A catalog row older than this is hidden from the UI until re-reviewed (§12.1).",
-  },
-  {
-    field: "researchRefreshDays",
-    label: "Research refresh cadence",
-    unit: "days",
-    hint: "How often the ATT&CK/rule feeds are re-pulled to justify tool currency (§12.1).",
-  },
-  {
-    field: "sentinelDnsQueriesPerMinute",
-    label: "Sentinel: DNS queries / minute",
-    unit: "queries",
-    hint: "Egress velocity cap — a spike freezes the run and files an abuse report (§5.2.2).",
-  },
-  {
-    field: "sentinelEntropyThreshold",
-    label: "Sentinel: entropy threshold",
-    unit: "score",
-    hint: "Tunnelling/covert-channel score above which egress is judged malicious (§5.2.2).",
-  },
-  {
-    field: "sentinelFreezeOnRefusals",
-    label: "Sentinel: refusals before freeze",
-    unit: "refusals",
-    hint: "Consecutive non-attested-target refusals before the account auto-freezes (§5.2.1).",
-  },
-  {
-    field: "modulePriceUsd",
-    label: "Cyber Lab module price",
-    unit: "USD",
-    hint: "Price of the self-serve Cyber Lab upgrade.",
-    money: true,
-  },
-  {
-    field: "consentTermsVersion",
-    label: "AUP consent version",
-    unit: "version",
-    hint: "The current Acceptable-Use Policy version. Changing it forces every user to re-accept before the lab reopens.",
-    text: true,
-  },
-];
-
-function CyberLabCapsPanel() {
-  const [state, setState] = useState<CyberLabCapsState | null>(null);
-  const [error, setError] = useState("");
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [saving, setSaving] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    setError("");
-    try {
-      const res = await fetch("/api/admin/cyberlab");
-      if (!res.ok) throw new Error("Failed to load Cyber Lab limits");
-      setState((await res.json()) as CyberLabCapsState);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load Cyber Lab limits");
-    }
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  async function patch(field: string, body: Record<string, boolean | number | string>) {
-    setSaving(field);
-    setError("");
-    try {
-      const res = await fetch("/api/admin/cyberlab", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setError(typeof data.error === "string" ? data.error : "Failed to update");
-        return;
-      }
-      setState(data as CyberLabCapsState);
-      setDrafts((prev) => {
-        const next = { ...prev };
-        delete next[field];
-        return next;
-      });
-    } catch {
-      setError("Network error");
-    } finally {
-      setSaving(null);
-    }
-  }
-
-  return (
-    <div className="mb-8">
-      <h2 className="text-2xl font-semibold tracking-tight">Cyber Lab limits</h2>
-      <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-        Dials for the Cyber Lab (TASK_156). Read server-side, so a change here is live without a redeploy. The lab
-        engine is not built yet — these exist so the RAM envelope and caps are set before the heavy tooling lands and
-        the resource governor can queue against them.
-      </p>
-      {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
-      {!state ? (
-        <p className="mt-4 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
-      ) : (
-        <div className="flex flex-col gap-3">
-          <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="min-w-0">
-                <p className="font-medium text-zinc-900 dark:text-zinc-100">Cyber Lab</p>
-                <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
-                  {state.enabled ? "Enabled — the lab surface is live." : "Off — the lab is dark until it ships."}
-                </p>
-              </div>
-              <button
-                onClick={() => patch("enabled", { enabled: !state.enabled })}
-                disabled={saving === "enabled"}
-                className={`rounded-lg px-3 py-1.5 text-sm font-medium text-white transition-colors disabled:opacity-50 ${
-                  state.enabled ? "bg-emerald-600 hover:bg-emerald-500" : "bg-zinc-400 hover:bg-zinc-500"
-                }`}
-              >
-                {state.enabled ? "Enabled" : "Disabled"}
-              </button>
-            </div>
-          </div>
-
-          {CYBERLAB_CAP_ROWS.map((row) => {
-            const current = state.caps[row.field];
-            const draft = drafts[row.field];
-            return (
-              <div
-                key={row.field}
-                className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
-              >
-                <div className="min-w-0">
-                  <p className="font-medium text-zinc-900 dark:text-zinc-100">
-                    {row.label} <span className="text-xs font-normal text-zinc-400">({row.unit})</span>
-                  </p>
-                  <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">{row.hint}</p>
-                </div>
-                <div className="flex items-center gap-3">
-                  <input
-                    type={row.text ? "text" : "number"}
-                    min={row.text ? undefined : 0}
-                    step={row.text ? undefined : row.money ? "0.01" : "1"}
-                    value={draft ?? String(current)}
-                    onChange={(e) => setDrafts((prev) => ({ ...prev, [row.field]: e.target.value }))}
-                    className="w-28 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
-                  />
-                  <button
-                    onClick={() => {
-                      if (row.text) {
-                        const s = (draft ?? String(current)).trim();
-                        if (s.length === 0) {
-                          setError(`${row.label} must not be blank`);
-                          return;
-                        }
-                        patch(row.field, { [row.field]: s });
-                        return;
-                      }
-                      const n = Number(draft ?? current);
-                      const min = row.money ? 0 : 1;
-                      if (!Number.isFinite(n) || n < min) {
-                        setError(`${row.label} must be a number \u2265 ${min}`);
-                        return;
-                      }
-                      patch(row.field, { [row.field]: row.money ? n : Math.floor(n) });
-                    }}
-                    disabled={saving === row.field || draft === undefined}
-                    className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-100 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
-                  >
-                    Set
-                  </button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-
-// Task 93 — admin visibility + revoke for Vantra links (owner's per-user
-// device-provisioning surface). Read-only table of every link + a revoke
-// button (audited through AgentActionAudit on the backend).
-
-type VantraLinkRow = {
-  id: string;
-  email: string;
-  orgId: string;
-  orgName: string;
-  status: string;
-  deviceCount: number;
-  lastSyncedAt: string | null;
-  lastError: string | null;
-  createdAt: string;
-};
-
 function VantraLinksPanel() {
   const [links, setLinks] = useState<VantraLinkRow[] | null>(null);
   const [error, setError] = useState("");
@@ -3666,30 +3370,6 @@ function InfrastructureTab() {
   );
 }
 
-function CyberLabAdminTab() {
-  return (
-    <div>
-      <h2 className="text-2xl font-semibold tracking-tight">Cyber Lab</h2>
-      <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-        Everything Cyber Lab in one place: the access/egress limits dials (moved out
-        of Infrastructure), the §12.1 research gate, and every lab run with its §5.2
-        refusals.
-      </p>
-      <div className="mt-6">
-        <CyberLabGuide />
-      </div>
-      <div className="mt-6">
-        <CyberLabCapsPanel />
-      </div>
-      <div className="mt-6">
-        <ResearchTab />
-      </div>
-      <div className="mt-6">
-        <LabRunsTab />
-      </div>
-    </div>
-  );
-}
 
 function SessionsTab() {
   const confirm = useConfirm();
@@ -6230,9 +5910,36 @@ function MainStreetReferralsTab() {
   const [code, setCode] = useState<string | null>(null);
   const [email, setEmail] = useState("");
   const [expiresInDays, setExpiresInDays] = useState("7");
+  const [activeTab, setActiveTab] = useState<"generate" | "users">("generate");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [users, setUsers] = useState<Array<{
+    id: string;
+    email: string;
+    name: string | null;
+    role: string;
+    tier: string;
+    createdAt: string;
+  }>>([]);
+  const [usersLoading, setUsersLoading] = useState(false);
+
+  async function loadUsers() {
+    setUsersLoading(true);
+    try {
+      const res = await fetch("/api/admin/mainstreet/users");
+      const data = await res.json();
+      if (res.ok) {
+        setUsers(data.users ?? []);
+      } else {
+        setError(data.error ?? "Failed to load users");
+      }
+    } catch {
+      setError("Failed to load users");
+    } finally {
+      setUsersLoading(false);
+    }
+  }
 
   async function generateCode(e: React.FormEvent) {
     e.preventDefault();
@@ -6281,6 +5988,35 @@ function MainStreetReferralsTab() {
         </a>
       </div>
 
+      {/* Tabs */}
+      <div className="flex gap-4 mb-6 border-b border-zinc-200 dark:border-zinc-800">
+        <button
+          onClick={() => setActiveTab("generate")}
+          className={`-mb-px border-b-2 font-medium text-sm ${
+            activeTab === "generate"
+              ? "border-brand-600 text-brand-600 dark:border-brand-400 dark:text-brand-400"
+              : "border-transparent text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-400"
+          }`}
+        >
+          Generate Code
+        </button>
+        <button
+          onClick={() => {
+            setActiveTab("users");
+            loadUsers();
+          }}
+          className={`-mb-px border-b-2 font-medium text-sm ${
+            activeTab === "users"
+              ? "border-brand-600 text-brand-600 dark:border-brand-400 dark:text-brand-400"
+              : "border-transparent text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-400"
+          }`}
+        >
+          Users ({users.length})
+        </button>
+      </div>
+
+      {/* Generate Code Tab */}
+      {activeTab === "generate" && (
       {/* Referral code generator */}
       <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-6 mb-8 dark:border-zinc-800 dark:bg-zinc-900/50">
         <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-4">
@@ -6345,6 +6081,61 @@ function MainStreetReferralsTab() {
           </div>
         )}
       </div>
+      ))}
+
+      {/* Users Tab */}
+      {activeTab === "users" && (
+      <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-6 dark:border-zinc-800 dark:bg-zinc-900/50">
+        <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-4">
+          MainStreet Shield Users
+        </h3>
+        <p className="text-xs text-zinc-500 dark:text-zinc-400 mb-4">
+          All users who signed up via MainStreet Shield referral links. Every new signup is automatically assigned Tier 1.
+        </p>
+        {usersLoading ? (
+          <p className="text-xs text-zinc-500 italic">Loading users…</p>
+        ) : users.length === 0 ? (
+          <p className="text-xs text-zinc-500 italic">
+            No users yet. Share a referral link to get signups.
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-zinc-300 dark:border-zinc-800">
+                  <th className="text-left pb-3 text-xs font-semibold text-zinc-500 dark:text-zinc-400">
+                    Email
+                  </th>
+                  <th className="text-left pb-3 text-xs font-semibold text-zinc-500 dark:text-zinc-400">
+                    Tier
+                  </th>
+                  <th className="text-left pb-3 text-xs font-semibold text-zinc-500 dark:text-zinc-400">
+                    Role
+                  </th>
+                  <th className="text-left pb-3 text-xs font-semibold text-zinc-500 dark:text-zinc-400">
+                    Joined
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {users.map((u) => (
+                  <tr key={u.id} className="border-b border-zinc-200/50 dark:border-zinc-800/50">
+                    <td className="py-3 text-zinc-900 dark:text-zinc-100 font-mono text-xs">{u.email}</td>
+                    <td className="py-3">
+                      <span className={u.tier === "1" ? "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400" : u.tier === "3" ? "bg-brand-100 text-brand-700 dark:bg-brand-900/30 dark:text-brand-300" : "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"} className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold">
+                        Tier {u.tier}
+                      </span>
+                    </td>
+                    <td className="py-3 text-zinc-500 dark:text-zinc-400 text-xs font-mono">{u.role}</td>
+                    <td className="py-3 text-zinc-500 dark:text-zinc-400 text-xs">{new Date(u.createdAt).toLocaleDateString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+      ))}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800 dark:bg-zinc-800/50">

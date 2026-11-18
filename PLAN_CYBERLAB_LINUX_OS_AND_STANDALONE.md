@@ -20,7 +20,7 @@
 - Agent tab: https://mainstreetmint.click/agent (307 without auth, 200 with auth)
 - Company onboarding: https://mainstreetmint.click/company (307 without auth, 200 with auth)
 - Admin referrals: https://mainstreetmint.click/admin/referrals (307 without auth, 200 with admin session)
-- SpaceWorker admin: MainStreet Referrals tab added (deployed via spaceworker deploy.yml)
+- SpaceWorker admin: MainStreet Referrals tab with working referral code generator form (POST to /api/admin/mainstreet/invites → proxies to mainstreet-shield invite API). Admin can generate codes with email + expiry, get signup links directly in admin panel. (deployed via spaceworker deploy.yml)
 
 ---
 
@@ -171,13 +171,41 @@ nginx vhost `mainstreetmint.click` → `127.0.0.1:3000` (new Next.js app, separa
 
 ---
 
-## 6. Open questions (owner to answer before build)
+## 7. MainStreet Shield Referral Flow Summary (current state)
 
-1. **VM size:** RAM/CPU/disk? (suggested: 4 GB / 2 vCPU / 60 GB)
-2. **Linux distro:** Ubuntu Desktop, Debian XFCE, or lightweight? (suggested: Ubuntu Desktop)
-3. **Cline access:** SSH-only for commands, or also VNC desktop control? (suggested: SSH first)
-4. **Signup flow:** Separate `/signup` for MainStreet Shield, or `/shield` landing creating an account with `shield` entitlement?
-5. **Admin invites:** Admin invite codes, or auto-approve mainstreetmint.click signups?
+### SpaceWorker admin referral flow (reference)
+1. SpaceWorker admin → "MainStreet Referrals" tab → generates referral code
+2. SpaceWorker creates `InviteLink` row (8-char code, email-bound, `referredById`)
+3. Admin sends link to prospective user → user clicks `/r/CODE` → signup page
+4. SpaceWorker validates code → creates user → email verification → tier 1
+
+### MainStreet Shield referral flow (implemented)
+1. SpaceWorker admin → "MainStreet Referrals" tab → generates referral code
+2. SpaceWorker admin POSTs to `mainstreet-shield/api/admin/referrals`
+3. MainStreet Shield creates `Referral` row (8-char hex code, `referrerId`)
+4. Admin gets signup link: `/signup?ref=CODE`
+5. User clicks link → middleware sets `sw_ref` cookie → loads `/signup`
+6. User submits form → API validates code → creates user with **tier 1**
+7. User visits `/settings` → sees tier 1 + referral code
+8. Admin (SpaceWorker) can upgrade user to tier 3 or 5 via `/api/admin/tier`
+9. Tier 5 → full access (VM creation, agent, company, workflows)
+
+### Key fixes
+- **Signup API** now accepts HTML form POST (form-encoded) + JSON
+- **Referral code resolved** from body → query → cookie (`sw_ref`) fallback
+- **Prisma client regenerated** (`Referral` model) — runtime upgrade on VPS
+- **Service restarted** (`systemctl restart mainstreet-shield`)
+- **Verification** — signup API returns 200, user created with tier 1, referral marked claimed, Shield/Agent/Company gate by tier
+
+### Live verification
+| Endpoint | Result |
+|----------|--------|
+| `POST /api/auth/signup` | 200 — user created, tier 1 |
+| `GET /api/auth/signup` | 200 — tier 1, role user |
+| Referral claim | `claimed`, `referredId` set |
+| User record | tier `1`, role `user` |
+| Shield gate | tier 1 → redirects to `/settings` |
+| `/login` | redirects to `/` (no standalone login)
 6. **VNC password:** Random per-session or fixed? (suggested: random, via `/status` API to owner + admin)
 
 ---
