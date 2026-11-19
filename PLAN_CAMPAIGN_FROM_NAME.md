@@ -219,10 +219,12 @@ Prisma Client (generated from schema.prisma) SELECTs/INSERTs these columns. PGli
 |------|--------|------|--------|
 | 1 | Add `fromNames` to `EmailCampaign` table in `db/schema.sql` | `exe/runtime/standalone/db/schema.sql` | ✅ Done |
 | 2 | Add `resolvedFromName` to `EmailQueueItem` table in `db/schema.sql` | `exe/runtime/standalone/db/schema.sql` | ✅ Done |
-| 3 | Add `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` migration in `initLocalExeDatabase()` for both columns (existing installs upgrade without data loss) | `lib/local-exe-db.ts` | ⏳ Next |
-| 4 | `tsc --noEmit` + ESLint | — | ⏳ Pending |
-| 5 | Rebuild mailer EXE via CI | — | ✅ Done (run 44530317377) |
-| 6 | Security verify + upload to mailer link | — | ✅ Done |
+| 3 | Add `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` migration in `initLocalExeDatabase()` for both columns (existing installs upgrade without data loss) | `lib/local-exe-db.ts` | ✅ Done |
+| 4 | Coalesce null `fromAddresses` to `[]` in `resolveFromAddressesByMailbox` | `lib/campaign-recipients.ts` | ✅ Done |
+| 5 | Try/catch around `createCampaign()` and `findMany()` in POST/GET `/api/campaigns` | `app/api/campaigns/route.ts` | ✅ Done |
+| 6 | `tsc --noEmit` + ESLint | — | ✅ Done |
+| 7 | Rebuild mailer EXE via CI | — | ✅ Done (run 44542485413) |
+| 8 | Security verify + upload to mailer link | — | ✅ Done |
 
 ### File edits
 
@@ -238,6 +240,66 @@ Prisma Client (generated from schema.prisma) SELECTs/INSERTs these columns. PGli
   ```
 
 ### Verification gates
+- [x] `tsc --noEmit` 0 errors
+- [x] `eslint` clean on both touched files
+- [x] CI `build-exe.yml` variant=mailer succeeds (run 44542485413)
+- [x] CI artifact contains `*.exe` NSIS installer
+- [x] Artifact security verification: no secrets, no placeholder, zero `.ts`/`.tsx` outside `node_modules`
+- [x] New EXE uploaded to mailer download link
+
+## NEW: Fix EXE SMTP send failure — `mailbox.fromAddresses[0]` null deref
+
+### Root cause (confirmed by reading `app/api/internal/mail-queue-drain/route.ts:243`)
+
+```
+const resolvedFromAddress =
+  pin && pin.fromAddress
+    ? pin.fromAddress
+    : item.resolvedFromAddress || mailbox.fromAddresses[0] || mailbox.username;
+```
+
+If `mailbox.fromAddresses` is `null` (user added mailbox on EXE without setting from addresses), `mailbox.fromAddresses[0]` throws `TypeError: Cannot read properties of null (reading '0')`. Every queued item gets caught → marked `"failed"` → **nothing is sent**.
+
+On the web app this works because `fromAddresses` is set when adding the mailbox there. On the EXE the user added the mailbox without setting `fromAddresses`.
+
+`lib/campaign-recipients.ts` line 20 already uses `(r.fromAddresses ?? [])` — already null-safe.
+`lib/deliverability.ts` line 146 already uses `opts.mailbox.fromAddresses?.[0]` — already null-safe.
+
+### Fix plan
+
+| Step | Action | File | Status |
+|------|--------|------|--------|
+| 1 | Fix `mailbox.fromAddresses[0]` → `mailbox.fromAddresses?.[0]` in drain route | `app/api/internal/mail-queue-drain/route.ts` | ✅ Done |
+| 2 | Add `console.error` logging in drain route catch block for visibility | `app/api/internal/mail-queue-drain/route.ts` | ✅ Done |
+| 3 | Add `console.error` logging in `runTestSend` catch block | `lib/deliverability.ts` | ✅ Done |
+| 4 | `tsc --noEmit` + ESLint on all touched files | — | ✅ Done |
+| 5 | Commit + push to `main` | — | ⏳ |
+| 6 | Trigger CI Build & Deploy (`build-exe.yml`, variant=mailer) | — | ⏳ |
+| 7 | Security verify + upload to mailer link | — | ⏳ |
+
+### File to modify — exact change
+
+**`app/api/internal/mail-queue-drain/route.ts:243`:**
+```diff
+-            : item.resolvedFromAddress || mailbox.fromAddresses[0] || mailbox.username;
++            : item.resolvedFromAddress || mailbox.fromAddresses?.[0] || mailbox.username;
+```
+
+**`app/api/internal/mail-queue-drain/route.ts` catch block (~line 305):**
+```diff
+      } catch (e) {
+        const error = e instanceof Error ? e.message : "Unknown error";
++       console.error("[mail-queue-drain] send failed for item", item.id, error);
+```
+
+**`lib/deliverability.ts` catch block (~line 189):**
+```diff
+  } catch (e) {
+    sendError = e instanceof Error ? e.message : "Test send failed at SMTP";
++   console.error("[deliverability] test send failed:", e);
+```
+
+### Verification gates
 - [ ] `tsc --noEmit` 0 errors
 - [ ] `eslint` clean on both touched files
 - [ ] CI `build-exe.yml` variant=mailer succeeds
@@ -245,5 +307,5 @@ Prisma Client (generated from schema.prisma) SELECTs/INSERTs these columns. PGli
 - [ ] Artifact security verification: no secrets, no placeholder, zero `.ts`/`.tsx` outside `node_modules`
 - [ ] New EXE uploaded to mailer download link
 
-**PLAN ONLY beyond this point.** No CI build will be triggered until you give the go-ahead.
+**PLAN ONLY beyond step 4.** No CI build will be triggered until you give the go-ahead on the full plan.
 

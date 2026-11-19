@@ -144,6 +144,7 @@ export async function runTestSend(opts: {
     });
   } catch (e) {
     sendError = e instanceof Error ? e.message : "Test send failed at SMTP";
+    console.error("[deliverability] test send failed:", e);
   }
 
   let messages: string[] = [];

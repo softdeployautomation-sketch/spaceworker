@@ -246,7 +246,7 @@ export async function POST(req: Request) {
         const resolvedFromAddress =
           pin && pin.fromAddress
             ? pin.fromAddress
-            : item.resolvedFromAddress || mailbox.fromAddresses[0] || mailbox.username;
+            : item.resolvedFromAddress || mailbox.fromAddresses?.[0] || mailbox.username;
         const resolvedFromName = pin?.fromName ?? item.resolvedFromName;
         const from = resolvedFromName
           ? `"${resolvedFromName}" <${resolvedFromAddress}>`
@@ -303,6 +303,7 @@ export async function POST(req: Request) {
         }
       } catch (e) {
         const error = e instanceof Error ? e.message : "Unknown error";
+        console.error("[mail-queue-drain] send failed for item", item.id, error);
         const errorCategory = classifySmtpError(e);
         const attempts = item.attempts + 1;
         // soft_bounce/rate_limited get a backoff window and revert to "queued"
