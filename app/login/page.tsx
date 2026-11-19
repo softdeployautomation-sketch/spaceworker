@@ -6,7 +6,6 @@ import { redirect } from "next/navigation";
 import { AuthForm } from "@/components/auth-form";
 import { getSession } from "@/lib/auth";
 import { hasAccessGate } from "@/lib/referral";
-import { EXE_ADMIN_REFERRAL_CODE } from "@/lib/exe-runtime";
 
 
 export const metadata: Metadata = { title: "Sign in" };
@@ -40,20 +39,11 @@ export default async function LoginPage({
   // enforced later at signup, not here — this only decides "may they see the form".
   let hasAccess = refCookie ? await hasAccessGate(refCookie) : false;
 
-  // TASK_XDEVICE — when the EXE's admin referral code came as ?ref=CODE (not via
-  // /r/:code which already stamped sw_wrapper), stamp it here. Next 16 forbids
-  // cookies().set() during Server Component render, so we redirect to a Route
-  // Handler that stamps the cookie and sends us back.
-  //
-  // We only check refQuery here, not refCookie: if refCookie already equals the
-  // EXE code, /r/:code already stamped sw_wrapper on the way in — no redirect needed.
   const needsReferralCookie = !hasAccess && !!refQuery;
-  const needsWrapperCookie = refQuery === EXE_ADMIN_REFERRAL_CODE;
 
-  if (needsReferralCookie || needsWrapperCookie) {
+  if (needsReferralCookie) {
     const params = new URLSearchParams();
-    if (needsReferralCookie) params.set("ref", refQuery!);
-    if (needsWrapperCookie) params.set("wrapper", "true");
+    params.set("ref", refQuery!);
     params.set("redirect", "/login");
     redirect(`/api/auth/set-referral-cookie?${params.toString()}`);
   }
