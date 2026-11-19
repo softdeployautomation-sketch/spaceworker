@@ -62,6 +62,10 @@ export async function POST(req: Request) {
     // `variants` pairs). Each rotates on its own index, cross-combined per recipient.
     subjects?: unknown;
     bodies?: unknown;
+    // Task 29, item 5 — independent sender display names rotated alongside
+    // subjects/bodies. Each entry becomes the friendly "From" name shown in the
+    // recipient's inbox (e.g. "Weekly Reminder"). Empty/absent = bare address.
+    fromNames?: unknown;
     // Task 29, item 3 — insert an ad-hoc test recipient into the queue at a
     // chosen position ({ email, mode: "top"|"position"|"every", position?, everyN? }).
     manualInsert?: unknown;
@@ -124,6 +128,9 @@ export async function POST(req: Request) {
   let bodies = rawBodies.map((b) => String(b ?? "").trim()).filter((b) => b.length > 0);
   subjects = [...new Set(subjects)];
   bodies = [...new Set(bodies)];
+  // Task 29, item 5 — independent from-name list, rotated alongside subjects/bodies.
+  const rawFromNames = Array.isArray(body.fromNames) ? body.fromNames : [];
+  const fromNames = rawFromNames.map((n) => String(n ?? "").trim()).filter((n) => n.length > 0);
   const decoupled = subjects.length > 0 || bodies.length > 0;
   const searchJobId = body.searchJobId ? String(body.searchJobId).trim() : null;
   // Task 26, Piece 4 — third recipient source: an explicit list of validated Lead
@@ -370,6 +377,9 @@ export async function POST(req: Request) {
     name,
     mailboxIds,
     ...(decoupled ? { subjects, bodies } : { variants }),
+    // Task 29, item 5 — independent sender display names rotated alongside
+    // subjects/bodies. Forwarded only when the client sent an explicit array.
+    ...(fromNames.length > 0 ? { fromNames } : {}),
     // Task 144 — "html" (default) or "text" (plain-text-only sends).
     ...(typeof body.bodyFormat === "string" ? { bodyFormat: body.bodyFormat } : {}),
     recipients: sendRecipients,

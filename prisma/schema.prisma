@@ -835,6 +835,11 @@ model EmailCampaign {
   // still rotates. Additive, so every pre-Task-29 campaign path is untouched.
   subjects               String[]              @default([])
   bodies                 String[]              @default([])
+  // Task 29, item 5 — independent sender display names for the From header.
+  // Rotates on its own index alongside subjects/bodies/addresses, so a campaign
+  // can send as "Weekly Reminder" / "Newsletter" etc. instead of the bare SMTP
+  // address. Empty ([]) = no display name, drain sends the bare from address.
+  fromNames              String[]              @default([])
   // Task 144 — how the bodies above are interpreted and sent:
   //   "html" (default) — sent as HTML with a derived plaintext alternative.
   //   "text"           — sent as a PLAIN-TEXT-ONLY message (single text/plain
@@ -1004,6 +1009,9 @@ model EmailQueueItem {
   // to at queue-build time (mailbox.fromAddresses[i % len] rotation). null = the
   // mailbox has no from addresses configured (drain falls back to SMTP username).
   resolvedFromAddress String?
+  // Task 29, item 5 — the sender display name this specific recipient's send
+  // resolved to at queue-build time (fromNames[i % len]). null = no display name.
+  resolvedFromName    String?
   // Per-recipient merge variables from the uploaded CSV (extra columns).
   // { "firstName": "Ada", "company": "ACME", ... }
   variables           Json?

@@ -22,6 +22,7 @@ type PinnedOverride = {
   subject: string;
   bodyHtml: string;
   fromAddress: string;
+  fromName?: string;
   remaining: number;
 };
 
@@ -242,10 +243,14 @@ export async function POST(req: Request) {
               : item.variant
                 ? renderMerge(item.variant.bodyHtml, variables, mergeOpts)
                 : renderMerge(item.campaign.bodyHtml, variables, mergeOpts);
-        const from =
+        const resolvedFromAddress =
           pin && pin.fromAddress
             ? pin.fromAddress
             : item.resolvedFromAddress || mailbox.fromAddresses[0] || mailbox.username;
+        const resolvedFromName = pin?.fromName ?? item.resolvedFromName;
+        const from = resolvedFromName
+          ? `"${resolvedFromName}" <${resolvedFromAddress}>`
+          : resolvedFromAddress;
 
         // The unsubscribe mechanism (RFC 8058 headers + a visible footer link)
         // and the plaintext alternative are built by lib/campaign-message.ts —
@@ -263,7 +268,9 @@ export async function POST(req: Request) {
         const message = buildCampaignMessage({
           subject,
           bodyHtml: html,
-          from,
+          // The mailto: unsubscribe arm needs a usable bare address — not a
+          // `"Name <address>"` string — so pass the bare resolved address here.
+          from: resolvedFromAddress,
           toEmail: item.toEmail,
           userId: item.campaign.userId,
           // Task 144 — a text-only campaign omits the HTML part entirely.
@@ -658,6 +665,7 @@ export async function POST(req: Request) {
             subject: pin.subject,
             bodyHtml: pin.bodyHtml,
             fromAddress: pin.fromAddress,
+            fromName: pin.fromName,
             remaining: pin.remaining,
           },
         },

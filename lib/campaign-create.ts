@@ -31,6 +31,11 @@ export interface CreateCampaignInput {
   // cross-combined per recipient, and no CampaignVariant rows are created.
   subjects?: string[];
   bodies?: string[];
+  // Task 29, item 5 — independent sender display names for the From header.
+  // Rotates on its own index alongside subjects/bodies/addresses so a campaign
+  // can send as "Weekly Reminder" / "Newsletter" etc. instead of the bare SMTP
+  // address. Empty ([]) = no display name, drain sends the bare from address.
+  fromNames?: string[];
   // Task 144 — "html" | "text"; how the bodies above are sent. Omitted keeps the
   // DB default ("html"), i.e. the pre-existing behaviour, so automation template
   // cloning and every existing caller are unaffected.
@@ -97,6 +102,7 @@ export async function createCampaign(input: CreateCampaignInput): Promise<Create
   );
   const subjects = (input.subjects ?? []).map((s) => s.trim()).filter((s) => s.length > 0);
   let bodies = (input.bodies ?? []).map((b) => b.trim()).filter((b) => b.length > 0);
+  const fromNames = (input.fromNames ?? []).map((n) => n.trim()).filter((n) => n.length > 0);
   let variants = (input.variants ?? []).filter((v) => v.subject.trim().length > 0 && v.bodyHtml.trim().length > 0);
   // Task 29, item 4 — a campaign is DECOUPLED when it supplies subject/body lists
   // (the new cross-rotated form). Legacy pair-based input (variants) is the same
@@ -136,7 +142,7 @@ export async function createCampaign(input: CreateCampaignInput): Promise<Create
     // In decoupled mode subjects/bodies are passed directly; in legacy mode the
     // variants map 1:1 to placeholder variant ids so the block count matches.
     ...(decoupled
-      ? { subjects, bodies }
+      ? { subjects, bodies, fromNames }
       : { variantRows: variants.map((_, i) => ({ id: String(i) })) }),
     recipients,
     rotateEvery,
@@ -163,6 +169,8 @@ export async function createCampaign(input: CreateCampaignInput): Promise<Create
         maxSendDelaySeconds,
         // Decoupled content: store the independent (cloak-rewritten) lists; legacy keeps [].
         ...(decoupled ? { subjects, bodies } : {}),
+        // Task 29, item 5 — store fromNames when supplied; empty array default applies otherwise.
+        ...(fromNames.length > 0 ? { fromNames } : {}),
         // Task 144 — only write it when explicitly asked for; omit otherwise so the
         // schema default applies (no behaviour change for existing callers).
         ...(input.bodyFormat ? { bodyFormat: normalizeBodyFormat(input.bodyFormat) } : {}),
@@ -204,7 +212,7 @@ export async function createCampaign(input: CreateCampaignInput): Promise<Create
         campaignId: campaign.id,
         mailboxIds,
         ...(decoupled
-          ? { subjects, bodies }
+          ? { subjects, bodies, fromNames }
           : { variantRows }),
         recipients,
         rotateEvery,

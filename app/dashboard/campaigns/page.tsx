@@ -49,6 +49,9 @@ type Campaign = {
   // an inlined variants-length check (that's what broke the template button).
   subjects?: string[];
   bodies?: string[];
+  // Task 29, item 5 — independent sender display names rotated alongside
+  // subjects/bodies. Each entry becomes the friendly "From" name in the inbox.
+  fromNames?: string[];
   // Opted into the "My campaigns" group of the template picker below (and,
   // separately, into the admin Campaign Templates tab's promote-to-general
   // review list). Off by default — not every one-off campaign is meant to be
@@ -194,6 +197,9 @@ function CampaignsPageInner() {
   // Task 29, item 4 — independent body list (was a single shared body). Bodies
   // rotate on their own index, cross-combined with the subject list per recipient.
   const [bodies, setBodies] = useState<string[]>([""]);
+  // Task 29, item 5 — independent sender display names rotated alongside
+  // subjects/bodies. Each entry becomes the friendly "From" name in the inbox.
+  const [fromNames, setFromNames] = useState<string[]>([""]);
   // Task 29, item 3 — optional ad-hoc "test recipient" inserted into the queue at a
   // chosen position (top / after position N / every N-th recipient).
   const [miEnabled, setMiEnabled] = useState(false);
@@ -634,6 +640,15 @@ function CampaignsPageInner() {
   function removeBody(index: number) {
     setBodies(bodies.filter((_, i) => i !== index));
   }
+  function setFromNameAt(index: number, value: string) {
+    setFromNames(fromNames.map((n, i) => (i === index ? value : n)));
+  }
+  function addFromName() {
+    setFromNames([...fromNames, ""]);
+  }
+  function removeFromName(index: number) {
+    setFromNames(fromNames.filter((_, i) => i !== index));
+  }
 
   // TASK_234 — insert a placeholder from the token bar (rendered on top of
   // Bodies) at the CARET of the field being typed into. The focused element
@@ -675,6 +690,7 @@ function CampaignsPageInner() {
       if (content.subjects.length === 0 && content.bodies.length === 0) return;
       setSubjects(content.subjects);
       setBodies(content.bodies);
+      setFromNames(own.fromNames ?? []);
       return;
     }
     const rawVariants = templates.find((t) => t.id === id)?.variants ?? [];
@@ -693,10 +709,15 @@ function CampaignsPageInner() {
   // Task 29, item 4 — decoupled content: a subject list and a body list, each
   // rotating on its own index (a single-item list is held constant). This replaces
   // the old paired "shared body" model; the API stores both lists independently.
-  function validContent(): { subjects: string[]; bodies: string[] } {
+  function validContent(): {
+    subjects: string[];
+    bodies: string[];
+    fromNames: string[];
+  } {
     return {
       subjects: subjects.map((s) => s.trim()).filter((s) => s.length > 0),
       bodies: bodies.map((b) => b.trim()).filter((b) => b.length > 0),
+      fromNames: fromNames.map((n) => n.trim()).filter((n) => n.length > 0),
     };
   }
 
@@ -805,6 +826,7 @@ function CampaignsPageInner() {
           mailboxIds: selectedMailboxIds,
           subjects: content.subjects,
           bodies: content.bodies,
+          fromNames: content.fromNames,
           rotateEvery: Number(rotateEvery) || 1,
           batchSize: Number(batchSize) || 50,
           // Task 35 — optional send pacing bounds (seconds). Empty/missing falls
@@ -1134,6 +1156,35 @@ function CampaignsPageInner() {
                   {subjects.length < 5 && (
                     <button type="button" onClick={addSubject} className="rounded-lg border border-dashed border-zinc-300 px-3 py-1.5 text-sm text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-400">
                       + Add subject
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-1 text-sm font-medium">
+                <span>
+                  From names <span className="text-xs text-zinc-400">— rotate on their own index, independently of subject/body (e.g. &quot;Weekly Reminder&quot;)</span>
+                </span>
+                <div className="mt-1 flex flex-wrap items-center gap-2">
+                  {fromNames.map((n, i) => (
+                    <div key={i} className="inline-flex items-center gap-1.5">
+                      <input
+                        type="text"
+                        value={n}
+                        onChange={(e) => setFromNameAt(i, e.target.value)}
+                        data-merge-field="fromName"
+                        data-merge-index={i}
+                        placeholder={`From name ${i + 1}`}
+                        className="w-64 rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                      />
+                      {fromNames.length > 1 && (
+                        <button type="button" onClick={() => removeFromName(i)} className="text-sm text-red-600 hover:underline">×</button>
+                      )}
+                    </div>
+                  ))}
+                  {fromNames.length < 5 && (
+                    <button type="button" onClick={addFromName} className="rounded-lg border border-dashed border-zinc-300 px-3 py-1.5 text-sm text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-400">
+                      + Add from name
                     </button>
                   )}
                 </div>

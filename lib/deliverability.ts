@@ -75,6 +75,10 @@ export async function runTestSend(opts: {
   // mailbox's normal fromAddresses[0] rotation). Used when a user (or an agent)
   // is live-testing an edited draft and wants to see it send as a specific From.
   from?: string;
+  // Optional sender display name paired with `from`. When set, the SMTP From
+  // header becomes `"Name <address>"` while the mailto unsubscribe arm keeps
+  // the bare address.
+  fromName?: string;
 }): Promise<{ outcome: DeliverabilityOutcome; checkId: string; landedIn: "inbox" | "spam" | "unknown"; error?: string }> {
   const since = new Date(Date.now() - 120_000); // generous window for clock skew
   const isOverride = !!opts.overrideRecipient;
@@ -98,7 +102,8 @@ export async function runTestSend(opts: {
     // rotation has run here), so use the mailbox's first configured From address
     // (empty list => send as the SMTP username). Task 32 — an explicit probe
     // `from` override (live draft test) wins when provided.
-    const from = opts.from ?? (opts.mailbox.fromAddresses?.[0] || opts.mailbox.username);
+    const fromAddress = opts.from ?? (opts.mailbox.fromAddresses?.[0] || opts.mailbox.username);
+    const from = opts.fromName ? `"${opts.fromName}" <${fromAddress}>` : fromAddress;
     // Task 144 — the SAME builder the real queue drain uses, so this probe sends
     // the message a real recipient would actually get: a plaintext alternative
     // (never HTML-only) and the full List-Unsubscribe mechanism. Assembling the
@@ -118,7 +123,9 @@ export async function runTestSend(opts: {
         ? renderMerge(opts.variant.subject, mergeVars, mergeOpts)
         : `${renderMerge(opts.variant.subject, mergeVars, mergeOpts)} [SW test ${token}]`,
       bodyHtml: renderMerge(opts.variant.bodyHtml, mergeVars, mergeOpts),
-      from,
+      // Bare address — the mailto: unsubscribe arm needs a usable address, not
+      // a `"Name <address>"` string.
+      from: fromAddress,
       toEmail: toAddress,
       userId: opts.userId,
       format: normalizeBodyFormat(opts.bodyFormat),

@@ -123,11 +123,14 @@ export function buildQueueItemRows(opts: {
   // and the drain falls back to the SMTP username). Built by
   // resolveFromAddressesByMailbox so every queue-builder call assigns it the same way.
   fromAddressesByMailbox?: Record<string, string[]>;
+  // Task 29, item 5 — independent sender display names. Rotates on its own index
+  // alongside subjects/bodies/addresses. Empty => no display name.
+  fromNames?: string[];
 }): Prisma.EmailQueueItemCreateManyInput[] {
-  const { campaignId, mailboxIds, recipients, variantRows = [], subjects = [], bodies = [], fromAddressesByMailbox = {} } = opts;
+  const { campaignId, mailboxIds, recipients, variantRows = [], subjects = [], bodies = [], fromAddressesByMailbox = {}, fromNames = [] } = opts;
   const rotateEvery = Math.max(1, Math.floor(opts.rotateEvery ?? 1));
   const offsetIndex = Math.max(0, Math.floor(opts.offsetIndex ?? 0));
-  const decoupled = (subjects.length > 0 || bodies.length > 0);
+  const decoupled = (subjects.length > 0 || bodies.length > 0 || fromNames.length > 0);
   return recipients.map((r, i) => {
     // Mailbox rotation (unchanged): `rotateEvery` consecutive recipients share a
     // sender, then the next block advances — floor(i/rotateEvery) % len.
@@ -139,6 +142,10 @@ export function buildQueueItemRows(opts: {
       toEmail: r.email,
       variables: r.variables as Prisma.InputJsonValue,
       source: r.source ?? "",
+      // Task 29, item 5 — default: no display name; the decoupled path overrides
+      // this per-recipient when fromNames are configured. Null (not undefined)
+      // so the column is explicitly empty rather than unset.
+      resolvedFromName: null,
     };
     // Task 30, item 4 — per-item From rotation. Continues across batches the same
     // way subject/body/mailbox do (offsetIndex), so an add-to-existing batch picks
@@ -154,9 +161,16 @@ export function buildQueueItemRows(opts: {
       const body = bodies.length > 0 ? bodies[Math.floor((i + offsetIndex) % bodies.length)] : "";
       row.resolvedSubject = subject;
       row.resolvedBodyHtml = body;
+      // Task 29, item 5 — from name rotates on its own index alongside subject/body.
+      const fromName = fromNames.length > 0 ? fromNames[Math.floor((i + offsetIndex) % fromNames.length)] : null;
+      row.resolvedFromName = fromName;
     } else {
       // Legacy pair path — one CampaignVariant row provides both subject and body.
-      row.variantId = variantRows[Math.floor((i + offsetIndex) / rotateEvery) % variantRows.length].id;
+      // Guard against empty variantRows (shouldn't happen in production: legacy
+      // campaigns always have variants, but prevents a crash on edge-case calls).
+      if (variantRows.length > 0) {
+        row.variantId = variantRows[Math.floor((i + offsetIndex) / rotateEvery) % variantRows.length].id;
+      }
     }
     return row;
   });
