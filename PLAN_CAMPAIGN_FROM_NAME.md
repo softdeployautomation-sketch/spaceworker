@@ -56,7 +56,7 @@ Campaign emails show a friendly sender **display name** (e.g. "Weekly Reminder")
 - [x] `tsc --noEmit` passes (0 errors) after fix
 - [x] Deployed via CI workflow `44478904579` — VPS verified: services active, no cookie errors in logs
 
-## Rotation queue editor enhancements (in progress)
+## Rotation queue editor enhancements (DONE)
 
 - [x] Rotation queue editor rows show bodyHtml preview beneath subject (truncated)
 - [x] Each rotation set row has an "Edit" button opening inline edit for {fromName, subject, bodyHtml}
@@ -66,4 +66,70 @@ Campaign emails show a friendly sender **display name** (e.g. "Weekly Reminder")
 - [x] `tsc --noEmit` passes (0 errors)
 - [x] `eslint` clean on all touched files
 - [ ] Deploy via CI workflow; verify BUILD_ID changed on box
+
+---
+
+## Phase 2 — Mailer EXE build with fromName changes (IN PROGRESS)
+
+### Context — what the mailer EXE build system is
+
+| Item | Detail |
+|------|--------|
+| Build command | `npm run exe:build:mailer` → `tauri build --config src-tauri/tauri.mailer.conf.json` |
+| CI workflow | `.github/workflows/build-exe.yml` — manual `workflow_dispatch`, Windows-only (`windows-latest`), variant input `mailer` |
+| Tauri config | `src-tauri/tauri.mailer.conf.json`: productName "SpaceWorker OS - Mailer", identifier `com.spaceworker-os.mailer`, targets `nsis`, frontendDist `../exe/static`, resources `../exe/runtime` |
+| Tauri entry | `src-tauri/src/main.rs`: identifier `com.spaceworker-os.mailer` → startup path `/dashboard` (mailer lands on Campaigns + Settings) |
+| Build pipeline | `next build` (`BUILD_TARGET=mailer` → standalone) → `scripts/runtime-assemble.mjs` bundles Node + standalone → Tauri bundles into NSIS installer |
+| CI artifact | `spaceworker-mailer-windows` run artifact (`src-tauri/target/release/bundle/nsis/*.exe`) |
+| Previous download link | `https://dl.instaweb.top/SpaceWorker-Mailer-Setup-0.1.0.exe` |
+
+### Step 0: Get all changes onto `main` cleanly (DONE)
+
+- Local `main` fast-forwarded to `58b7547` (origin/main) — includes all fromName + rotation queue editor changes ✅
+- `git status --short` — clean (exit 0) ✅
+- Removed blocking worktree `sw-backup-main` ✅
+
+### Step 2: Trigger CI mailer build (NEXT)
+
+| Step | Action | Command |
+|------|--------|---------|
+| 2 | Trigger CI mailer build | `gh workflow run build-exe.yml -R softdeployautomation-sketch/spaceworker --ref main -f variant=mailer` |
+| 3 | Wait for CI to complete | `gh run view <run-id> --json status,conclusion` |
+| 4 | Download CI artifact | `gh run download <run-id> -n spaceworker-mailer-windows` |
+| 5 | Verify artifact (security) | `7z x` the NSIS, grep for secrets/placeholder/`.ts` files |
+| 6 | Upload to mailer link | Replace `https://dl.instaweb.top/SpaceWorker-Mailer-Setup-0.1.0.exe` with new build |
+
+### FromName files that must compile into the mailer EXE
+
+All 12 files (schema, campaign-create, campaign-recipients, deliverability, mailer-send, drain route, test-send, deliverability-decision, campaigns API, campaign creation UI, campaign detail UI, migration SQL). The mailer EXE compiles the same Next.js codebase with `BUILD_TARGET=mailer`.
+
+### Previous EXE build issues to avoid (from EXE_BUILD_LESSONS_LEARNED.md)
+
+| # | Issue | Prevention |
+|---|-------|------------|
+| 1 | **Security: secrets leak into binary** | `runtime-assemble.mjs` scrubs `.env`, strips `.ts`/`.tsx`, fail-closes on placeholder secret. Verify after build: unpack NSIS (`7z x`), grep for secrets/placeholder/`.ts` count=0 outside `node_modules`. |
+| 2 | **Tauri `.build()` vs `.run()`** | `src-tauri/src/main.rs` calls `.run(...)` — confirmed. |
+| 3 | **Resource-path `_up_/` NSIS quirk** | `main.rs` `find_runtime_dir()` probes `_up_/` layout — confirmed. |
+| 4 | **Windows Node dist bundling** | `runtime-assemble.mjs` downloads full Node dist for `win32` + verifies `node --version` — confirmed. |
+| 5 | **UI at min window size** | mailer config sets `minWidth: 1024`, `minHeight: 700` — rotation queue editor + fromName inputs must render at that size. |
+| 6 | **Dirty git status before build** | Clean on `main` ✅ |
+| 7 | **Trusting local build instead of CI artifact** | Download real CI-built artifact, not local `tauri build`. |
+| 8 | **Build-time env bleed across variants** | CI sets `BUILD_TARGET=mailer` + `WRAPPER_MODE=""` for mailer arm only. |
+| 9 | **Placeholder secret shipped** | `EXE_LICENSE_SECRET` from CI secret — fail-closed if equals dev placeholder. |
+
+### Verification gates (all must pass before calling green)
+
+- [ ] `git status` clean on `main` (no uncommitted changes) ✅
+- [ ] CI `build-exe.yml` variant=mailer completes with `conclusion: success`
+- [ ] CI artifact `spaceworker-mailer-windows` contains `*.exe` (NSIS installer)
+- [ ] Artifact security verification: no real secret values, no placeholder secret, zero `.ts`/`.tsx` outside `node_modules`
+- [ ] New EXE uploaded to mailer download link, replacing previous `0.1.0.exe`
+
+### Deferred (not in this phase)
+- Mailbox-level fromName (follow-up)
+- Live inbox confirmation for mailer EXE (needs real send + inbox inspection)
+
+---
+
+**PLAN ONLY beyond this point.** No CI build will be triggered until you give the go-ahead.
 
