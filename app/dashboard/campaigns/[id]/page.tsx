@@ -287,7 +287,6 @@ export default function CampaignDetailPage() {
   const [editOpen, setEditOpen] = useState(false);
   const [editSubject, setEditSubject] = useState("");
   const [editBody, setEditBody] = useState("");
-  const [editFrom, setEditFrom] = useState("");
   const [editFromName, setEditFromName] = useState("");
   const [editBusy, setEditBusy] = useState(false);
   // True once a live draft test-send comes back — the promote option is only
@@ -308,6 +307,11 @@ export default function CampaignDetailPage() {
   };
   const [rotationQueueSets, setRotationQueueSets] = useState<RotationSet[]>([]);
   const [rotationQueueBusy, setRotationQueueBusy] = useState(false);
+  // Inline edit state for a single rotation set row (Edit → Save/Cancel flow)
+  const [editingSetId, setEditingSetId] = useState<string | null>(null);
+  const [editSetFromName, setEditSetFromName] = useState("");
+  const [editSetSubject, setEditSetSubject] = useState("");
+  const [editSetBodyHtml, setEditSetBodyHtml] = useState("");
   // Task 33 — "Run diagnostics": the 4-probe isolation ladder. Probe definitions
   // arrive from the run-diagnostics route (GET); each probe's own Run button
   // posts just that key and stores its landedIn outcome for a checklist badge.
@@ -879,7 +883,6 @@ export default function CampaignDetailPage() {
   function openEdit() {
     setEditSubject(campaign?.subjects?.[0] ?? campaign?.variants?.[0]?.subject ?? "");
     setEditBody(campaign?.bodies?.[0] ?? campaign?.variants?.[0]?.bodyHtml ?? "");
-    setEditFrom(fromOptions[0] ?? "");
     setEditFromName(campaign?.fromNames?.[0] ?? "");
     setDraftTested(false);
     setEditOpen(true);
@@ -899,7 +902,6 @@ export default function CampaignDetailPage() {
         body: JSON.stringify({
           subject: editSubject,
           bodyHtml: editBody,
-          ...(editFrom ? { from: editFrom } : {}),
           ...(editFromName ? { fromName: editFromName } : {}),
         }),
       });
@@ -1044,6 +1046,37 @@ export default function CampaignDetailPage() {
   // Remove a set from the rotation queue.
   function removeSet(setId: string) {
     setRotationQueueSets(rotationQueueSets.filter(s => s.id !== setId));
+  }
+
+  // Start inline editing of a rotation set row: pre-fill draft values from the set.
+  function startEditingSet(setId: string) {
+    const set = rotationQueueSets.find(s => s.id === setId);
+    if (!set) return;
+    setEditingSetId(setId);
+    setEditSetFromName(set.fromName);
+    setEditSetSubject(set.subject);
+    setEditSetBodyHtml(set.bodyHtml);
+  }
+
+  // Save inline edits back to the set entry.
+  function saveEditingSet() {
+    if (!editingSetId) return;
+    setRotationQueueSets(rotationQueueSets.map(s => {
+      if (s.id !== editingSetId) return s;
+      return { ...s, fromName: editSetFromName, subject: editSetSubject, bodyHtml: editSetBodyHtml };
+    }));
+    setEditingSetId(null);
+    setEditSetFromName("");
+    setEditSetSubject("");
+    setEditSetBodyHtml("");
+  }
+
+  // Cancel inline editing: discard draft values.
+  function cancelEditingSet() {
+    setEditingSetId(null);
+    setEditSetFromName("");
+    setEditSetSubject("");
+    setEditSetBodyHtml("");
   }
 
   // Finalize: add all confirmed sets to the campaign's rotation via
@@ -1844,24 +1877,6 @@ export default function CampaignDetailPage() {
               className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm outline-none focus:border-violet-500 dark:border-zinc-700 dark:bg-zinc-950"
             />
           </div>
-          {fromOptions.length > 0 && (
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                From address
-              </label>
-              <select
-                value={editFrom}
-                onChange={(e) => setEditFrom(e.target.value)}
-                className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm outline-none focus:border-violet-500 dark:border-zinc-700 dark:bg-zinc-950"
-              >
-                {fromOptions.map((f) => (
-                  <option key={f} value={f}>
-                    {f}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
           <div>
             <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
               From name
@@ -2503,7 +2518,30 @@ export default function CampaignDetailPage() {
                         key={s.id}
                         className="rounded-lg border border-zinc-200 bg-white p-2 dark:border-zinc-700 dark:bg-zinc-950"
                       >
-                        <div className="flex items-center gap-2 mb-1">
+                        {editingSetId === s.id ? (
+                          <div className="space-y-2">
+                            <div className="grid grid-cols-2 gap-1 text-xs">
+                              <div>
+                                <span className="text-zinc-400">From name</span>
+                                <input className="w-full border border-zinc-300 rounded px-1 py-0.5 text-xs dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100" value={editSetFromName} onChange={(e) => setEditSetFromName(e.target.value)} />
+                              </div>
+                              <div>
+                                <span className="text-zinc-400">Subject</span>
+                                <input className="w-full border border-zinc-300 rounded px-1 py-0.5 text-xs dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100" value={editSetSubject} onChange={(e) => setEditSetSubject(e.target.value)} />
+                              </div>
+                            </div>
+                            <div>
+                              <span className="text-zinc-400">Body HTML</span>
+                              <textarea className="w-full border border-zinc-300 rounded px-1 py-0.5 text-xs dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100" value={editSetBodyHtml} onChange={(e) => setEditSetBodyHtml(e.target.value)} rows={3} />
+                            </div>
+                            <div className="mt-1 flex items-center gap-2">
+                              <button type="button" onClick={() => void saveEditingSet()} className="rounded-lg bg-violet-600 px-3 py-1 text-xs font-medium text-white hover:bg-violet-500">Save</button>
+                              <button type="button" onClick={() => void cancelEditingSet()} className="rounded-lg border border-zinc-300 px-3 py-1 text-xs text-zinc-600 hover:bg-black/5 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-white/5">Cancel</button>
+                            </div>
+                          </div>
+                        ) : (
+                          <>
+                          <div className="flex items-center gap-2 mb-1">
                           <label className="text-xs font-medium text-zinc-600 dark:text-zinc-300">
                             From name
                           </label>
@@ -2532,6 +2570,13 @@ export default function CampaignDetailPage() {
                           >
                             Remove
                           </button>
+                          <button
+                            type="button"
+                            onClick={() => startEditingSet(s.id)}
+                            className="rounded px-1.5 py-0.5 text-xs text-zinc-400 hover:bg-violet-50 dark:text-violet-700 dark:text-zinc-500 dark:hover:bg-violet-900/30"
+                          >
+                            Edit
+                          </button>
                         </div>
                         <div className="grid grid-cols-2 gap-1 text-xs">
                           <div>
@@ -2543,6 +2588,12 @@ export default function CampaignDetailPage() {
                             <span className={`text-zinc-400 ${s.testResult === 'delivered' ? 'text-emerald-600' : s.testResult === 'failed' ? 'text-red-600' : ''}`}>
                               {s.tested ? (s.testResult === 'delivered' ? 'Delivered' : 'Failed') : 'Not tested'}
                             </span>
+                          </div>
+                        </div>
+                        <div className="mt-1 grid grid-cols-1 gap-1 text-xs">
+                          <div>
+                            <span className="text-zinc-400">Body preview</span>
+                            <div className="truncate text-zinc-500 dark:text-zinc-400">{s.bodyHtml.replace(/<[^>]*>/g, '').slice(0, 120)}{s.bodyHtml.replace(/<[^>]*>/g, '').length > 120 ? '…' : ''}</div>
                           </div>
                         </div>
                         <div className="mt-1 flex items-center gap-2">
@@ -2558,6 +2609,7 @@ export default function CampaignDetailPage() {
                             {s.id.startsWith('draft-') ? 'New draft' : 'Existing rotation'}
                           </div>
                         </div>
+                      </>)}
                       </div>
                     ))}
                   </div>
