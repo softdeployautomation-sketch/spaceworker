@@ -34,6 +34,7 @@ export async function POST(
     subject?: unknown;
     bodyHtml?: unknown;
     from?: unknown;
+    fromName?: unknown;
     // TASK_150 T5 — `to` is deliberately `unknown`: it may be one address (as
     // before) or an array of them, and a non-string/non-array value must be
     // reported rather than silently ignored.
@@ -53,6 +54,10 @@ export async function POST(
   // below once the campaign is loaded — that's what makes "test as this From"
   // cover every test, not just the calls that remember to send it.
   let draftFrom = typeof reqBody.from === "string" ? reqBody.from.trim() : undefined;
+  // Optional sender display name paired with `from`. When set, the SMTP From
+  // header becomes `"Name <address>"` while the mailto unsubscribe arm keeps
+  // the bare address.
+  let draftFromName = typeof reqBody.fromName === "string" ? reqBody.fromName.trim() : undefined;
   // 2026-09-28 — one-shot test recipient: "send THIS test to this address"
   // without touching the campaign's stored test target. It's how the test-setup
   // panel switches seats between test sends (Gmail this time, Outlook next) in
@@ -77,6 +82,11 @@ export async function POST(
   // caller didn't pass one — see the note on `draftFrom` above.
   if (typeof reqBody.from !== "string") {
     draftFrom = campaign.testFromOverride?.trim() || undefined;
+  }
+  // Fall back to the campaign's stored from name (first entry of the rotation
+  // list) when the caller didn't pass an explicit one.
+  if (typeof reqBody.fromName !== "string") {
+    draftFromName = campaign.fromNames?.[0]?.trim() || undefined;
   }
   if (campaign.status === "sending" || campaign.status === "done") {
     return NextResponse.json(
@@ -217,14 +227,14 @@ export async function POST(
       sentAny = true;
       // Always sequential, never Promise.all — see the blast comment above.
       results.push(
-        await runTestSend({ campaignId: campaign.id, userId: campaign.userId, mailbox: target.mailbox, variant, overrideRecipient: target.recipient.email, bodyFormat: campaign.bodyFormat, ...(draftFrom ? { from: draftFrom } : {}) }),
+        await runTestSend({ campaignId: campaign.id, userId: campaign.userId, mailbox: target.mailbox, variant, overrideRecipient: target.recipient.email, bodyFormat: campaign.bodyFormat, ...(draftFrom ? { from: draftFrom } : {}), ...(draftFromName ? { fromName: draftFromName } : {}) }),
       );
       attemptInfo.push({ mailboxLabel: target.mailbox.label, recipient: target.recipient.email });
     }
   } else {
     results.push(
       ...(await Promise.all(
-        mailboxes.map((mailbox) => runTestSend({ campaignId: campaign.id, userId: campaign.userId, mailbox, variant, seed: seed!, bodyFormat: campaign.bodyFormat, ...(draftFrom ? { from: draftFrom } : {}) })),
+        mailboxes.map((mailbox) => runTestSend({ campaignId: campaign.id, userId: campaign.userId, mailbox, variant, seed: seed!, bodyFormat: campaign.bodyFormat, ...(draftFrom ? { from: draftFrom } : {}), ...(draftFromName ? { fromName: draftFromName } : {}) })),
       )),
     );
     for (const mailbox of mailboxes) attemptInfo.push({ mailboxLabel: mailbox.label, recipient: null });

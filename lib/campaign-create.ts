@@ -142,8 +142,9 @@ export async function createCampaign(input: CreateCampaignInput): Promise<Create
     // In decoupled mode subjects/bodies are passed directly; in legacy mode the
     // variants map 1:1 to placeholder variant ids so the block count matches.
     ...(decoupled
-      ? { subjects, bodies, fromNames }
-      : { variantRows: variants.map((_, i) => ({ id: String(i) })) }),
+      ? { subjects, bodies }
+      : {}),
+  ...(fromNames.length > 0 ? { fromNames } : {}),
     recipients,
     rotateEvery,
     fromAddressesByMailbox,

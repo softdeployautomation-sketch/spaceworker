@@ -111,7 +111,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   });
   if (!campaign) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  let body: { action?: string; subject?: unknown; bodyHtml?: unknown; from?: unknown; pinCount?: unknown };
+  let body: { action?: string; subject?: unknown; bodyHtml?: unknown; from?: unknown; fromName?: unknown; pinCount?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -215,6 +215,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (action === "add_edit_and_continue") {
     const subject = typeof body.subject === "string" ? body.subject.trim() : "";
     const bodyHtml = typeof body.bodyHtml === "string" ? body.bodyHtml.trim() : "";
+    const fromName = typeof body.fromName === "string" ? body.fromName.trim() : undefined;
     if (!subject || !bodyHtml) {
       return NextResponse.json(
         { error: "Provide both an edited subject and body to promote" },
@@ -244,6 +245,15 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       ? baseBodies
       : [bodyHtml, ...baseBodies.filter((b) => b !== "")];
 
+    // fromNames rotates independently alongside subjects/bodies — front-insert
+    // the edited fromName unless it already sits at index 0 (no-op duplicate).
+    const baseFromNames = hasDecoupled
+      ? [...(Array.isArray(campaign.fromNames) ? campaign.fromNames : [])]
+      : [];
+    const fromNames = fromName && baseFromNames[0] !== fromName
+      ? [fromName, ...baseFromNames.filter((fn) => fn !== "")]
+      : baseFromNames;
+
     // This WAS a human-verified test (just with edited content) — record it in the
     // audit trail the same way the "continue" branch does, explicit that it was an
     // edited-and-approved variant.
@@ -259,9 +269,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     });
     // Both states resolve to "sending" here: fromInitialGate unlocks straight to
     // sending; fromBatchPause resumes to sending — same as "continue".
-    const entered = await tryEnterSending(id, session.userId, { subjects, bodies });
+    const entered = await tryEnterSending(id, session.userId, { subjects, bodies, fromNames });
     if (!entered) return trialCapResponse();
-    return NextResponse.json({ ok: true, status: "sending", subjects, bodies });
+    return NextResponse.json({ ok: true, status: "sending", subjects, bodies, fromNames });
   }
 
   // "continue"

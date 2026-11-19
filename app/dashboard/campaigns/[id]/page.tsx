@@ -129,6 +129,7 @@ type CampaignDetail = {
   maxSendDelaySeconds: number;
   subjects: string[] | null;
   bodies: string[] | null;
+  fromNames: string[] | null;
   // Human-assisted deliverability fallback — set, every check targets this
   // plain address instead of the platform seed mailbox (see lib/deliverability.ts).
   testRecipientOverride: string | null;
@@ -287,10 +288,26 @@ export default function CampaignDetailPage() {
   const [editSubject, setEditSubject] = useState("");
   const [editBody, setEditBody] = useState("");
   const [editFrom, setEditFrom] = useState("");
+  const [editFromName, setEditFromName] = useState("");
   const [editBusy, setEditBusy] = useState(false);
   // True once a live draft test-send comes back — the promote option is only
   // offered after that result, so promotion is always a judged outcome.
   const [draftTested, setDraftTested] = useState(false);
+  // Rotation queue editor — lets the user test multiple {fromName, subject, body}
+  // sets individually, confirm the ones that land in the inbox, and finalize
+  // which combinations go into the campaign's rotation.
+  const [rotationQueueOpen, setRotationQueueOpen] = useState(false);
+  type RotationSet = {
+    id: string;
+    fromName: string;
+    subject: string;
+    bodyHtml: string;
+    confirmed: boolean;
+    tested: boolean;
+    testResult: "delivered" | "failed" | null;
+  };
+  const [rotationQueueSets, setRotationQueueSets] = useState<RotationSet[]>([]);
+  const [rotationQueueBusy, setRotationQueueBusy] = useState(false);
   // Task 33 — "Run diagnostics": the 4-probe isolation ladder. Probe definitions
   // arrive from the run-diagnostics route (GET); each probe's own Run button
   // posts just that key and stores its landedIn outcome for a checklist badge.
@@ -756,6 +773,7 @@ export default function CampaignDetailPage() {
         status?: string;
         subjects?: string[];
         bodies?: string[];
+        fromNames?: string[];
         pinnedOverride?: CampaignDetail["pinnedOverride"];
       };
       if (!res.ok) {
@@ -766,6 +784,7 @@ export default function CampaignDetailPage() {
         if (data.status) partial.status = data.status;
         if (data.subjects) partial.subjects = data.subjects;
         if (data.bodies) partial.bodies = data.bodies;
+        if (data.fromNames) partial.fromNames = data.fromNames;
         if (data.pinnedOverride) partial.pinnedOverride = data.pinnedOverride;
         patchCampaign(partial);
       }
@@ -861,6 +880,7 @@ export default function CampaignDetailPage() {
     setEditSubject(campaign?.subjects?.[0] ?? campaign?.variants?.[0]?.subject ?? "");
     setEditBody(campaign?.bodies?.[0] ?? campaign?.variants?.[0]?.bodyHtml ?? "");
     setEditFrom(fromOptions[0] ?? "");
+    setEditFromName(campaign?.fromNames?.[0] ?? "");
     setDraftTested(false);
     setEditOpen(true);
   }
@@ -880,6 +900,7 @@ export default function CampaignDetailPage() {
           subject: editSubject,
           bodyHtml: editBody,
           ...(editFrom ? { from: editFrom } : {}),
+          ...(editFromName ? { fromName: editFromName } : {}),
         }),
       });
       const data = (await res.json().catch(() => ({}))) as { outcome?: string; error?: string; check?: DeliverabilityCheck };
@@ -912,6 +933,7 @@ export default function CampaignDetailPage() {
           action: "add_edit_and_continue",
           subject: editSubject,
           bodyHtml: editBody,
+          ...(editFromName ? { fromName: editFromName } : {})
         }),
       });
       const data = (await res.json().catch(() => ({}))) as {
@@ -919,6 +941,7 @@ export default function CampaignDetailPage() {
         status?: string;
         subjects?: string[];
         bodies?: string[];
+        fromNames?: string[];
       };
       if (!res.ok) {
         setTestResult({ outcome: "failed", error: data.error ?? "Couldn't promote the edited version." });
@@ -938,6 +961,131 @@ export default function CampaignDetailPage() {
       setDebating(false);
     }
   }
+
+
+  // Rotation queue editor — build initial sets from campaign's existing rotation
+  // plus the current edit draft, then let the user test each individually.
+  function openRotationQueueEditor() {
+    const subjects = campaign?.subjects ?? [];
+    const bodies = campaign?.bodies ?? [];
+    const fromNames = campaign?.fromNames ?? [];
+    const sets: RotationSet[] = [];
+    const len = Math.max(subjects.length, bodies.length, fromNames.length);
+    for (let i = 0; i < len; i++) {
+      sets.push({
+        id: `existing-${i}`,
+        fromName: fromNames[i] ?? "",
+        subject: subjects[i] ?? "",
+        bodyHtml: bodies[i] ?? "",
+        confirmed: false,
+        tested: false,
+        testResult: null,
+      });
+    }
+    if (editSubject || editBody || editFromName) {
+      sets.push({
+        id: `draft-${Date.now()}`,
+        fromName: editFromName,
+        subject: editSubject,
+        bodyHtml: editBody,
+        confirmed: false,
+        tested: false,
+        testResult: null,
+      });
+    }
+    setRotationQueueSets(sets);
+    setRotationQueueOpen(true);
+  }
+
+  // Test a single rotation set with a real test-send.
+  async function testRotationSet(setId: string) {
+    const set = rotationQueueSets.find(s => s.id === setId);
+    if (!set) return;
+    setRotationQueueBusy(true);
+    try {
+      const res = await fetch(`/api/campaigns/${id}/test-send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          subject: set.subject,
+          bodyHtml: set.bodyHtml,
+          ...(set.fromName ? { fromName: set.fromName } : {}),
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { outcome?: string; error?: string };
+      if (!res.ok) {
+        setRotationQueueSets(rotationQueueSets.map(s =>
+          s.id === setId ? { ...s, tested: true, testResult: "failed" } : s
+        ));
+        setTestResult({ outcome: "failed", error: data.error ?? "Test send failed" });
+      } else {
+        setRotationQueueSets(rotationQueueSets.map(s =>
+          s.id === setId ? { ...s, tested: true, testResult: "delivered" } : s
+        ));
+        setTestResult({ outcome: "delivered" });
+      }
+    } catch {
+      setRotationQueueSets(rotationQueueSets.map(s =>
+        s.id === setId ? { ...s, tested: true, testResult: "failed" } : s
+      ));
+      setTestResult({ outcome: "failed", error: "Network error while testing rotation set." });
+    } finally {
+      setRotationQueueBusy(false);
+    }
+  }
+
+  // Toggle the confirmed flag on a rotation set.
+  function toggleConfirmSet(setId: string) {
+    setRotationQueueSets(rotationQueueSets.map(s =>
+      s.id === setId ? { ...s, confirmed: !s.confirmed } : s
+    ));
+  }
+
+  // Remove a set from the rotation queue.
+  function removeSet(setId: string) {
+    setRotationQueueSets(rotationQueueSets.filter(s => s.id !== setId));
+  }
+
+  // Finalize: add all confirmed sets to the campaign's rotation via
+  // add_edit_and_continue, then close the editor.
+  async function finalizeRotationQueue() {
+    const confirmed = rotationQueueSets.filter(s => s.confirmed);
+    if (confirmed.length === 0) {
+      setTestResult({ outcome: "failed", error: "Confirm at least one set before finalizing." });
+      return;
+    }
+    setRotationQueueBusy(true);
+    try {
+      for (const set of confirmed) {
+        const res = await fetch(`/api/campaigns/${id}/deliverability-decision`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "add_edit_and_continue",
+            subject: set.subject,
+            bodyHtml: set.bodyHtml,
+            ...(set.fromName ? { fromName: set.fromName } : {}),
+          }),
+        });
+        if (!res.ok) {
+          const data = (await res.json().catch(() => ({}))) as { error?: string };
+          throw new Error(data.error ?? "Failed to add set to rotation");
+        }
+      }
+      setRotationQueueOpen(false);
+      setRotationQueueSets([]);
+      // Refresh campaign data to show updated rotation
+      const freshRes = await fetch(`/api/campaigns/${id}`);
+      const freshData = (await freshRes.json()) as CampaignDetail;
+      setCampaign(freshData);
+      setTestResult({ outcome: "delivered" });
+    } catch (err) {
+      setTestResult({ outcome: "failed", error: err instanceof Error ? err.message : "Failed to finalize rotation queue." });
+    } finally {
+      setRotationQueueBusy(false);
+    }
+  }
+
 
   // Task 33 — open the diagnostics panel, pulling the 4 probe definitions from
   // the run-diagnostics route's GET (the probe builder lives server-side in
@@ -1716,6 +1864,18 @@ export default function CampaignDetailPage() {
           )}
           <div>
             <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+              From name
+            </label>
+            <input
+              type="text"
+              value={editFromName}
+              onChange={(e) => setEditFromName(e.target.value)}
+              placeholder="e.g. Weekly Reminder"
+              className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm outline-none focus:border-violet-500 dark:border-zinc-700 dark:bg-zinc-950"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
               Body HTML
             </label>
             <MergeTokenBar onPick={insertEditToken} className="mt-1 mb-1" />
@@ -1759,6 +1919,14 @@ export default function CampaignDetailPage() {
                 className="mt-1.5 rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-violet-500 disabled:opacity-50"
               >
                 {debating ? "Promoting…" : "Use this edited version — add to rotation and go ahead"}
+              </button>
+              <button
+                type="button"
+                onClick={() => void openRotationQueueEditor()}
+                disabled={debating || editBusy || rotationQueueBusy}
+                className="mt-1.5 rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-600 hover:bg-black/5 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-white/5"
+              >
+                {rotationQueueBusy ? "Opening…" : "Add this and edit rotation queue"}
               </button>
             </div>
           )}
@@ -2308,9 +2476,120 @@ export default function CampaignDetailPage() {
           {/* Task 32 — the 4th, clearly-secondary path through the initial gate:
               manually edit and test a draft without touching stored content. */}
           {manualEditSection}
+          {/* Rotation queue editor — test multiple {fromName, subject, body} sets */}
+          {rotationQueueOpen && (
+            <Modal
+              title="Rotation queue editor"
+              open={rotationQueueOpen}
+              onClose={() => {
+                setRotationQueueOpen(false);
+                setRotationQueueSets([]);
+              }}
+            >
+              <div className="space-y-3">
+                <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                  Each set below gets a real test-send. Confirm the ones that deliver
+                  to the inbox. Finalize adds confirmed sets to the campaign&apos;s
+                  rotation.
+                </p>
+                {rotationQueueSets.length === 0 ? (
+                  <p className="text-xs text-zinc-400 dark:text-zinc-500">
+                    No sets in the queue.
+                  </p>
+                ) : (
+                  <div className="max-h-64 overflow-y-auto border border-zinc-200 rounded-lg dark:border-zinc-700 p-2 space-y-1">
+                    {rotationQueueSets.map((s) => (
+                      <div
+                        key={s.id}
+                        className="rounded-lg border border-zinc-200 bg-white p-2 dark:border-zinc-700 dark:bg-zinc-950"
+                      >
+                        <div className="flex items-center gap-2 mb-1">
+                          <label className="text-xs font-medium text-zinc-600 dark:text-zinc-300">
+                            From name
+                          </label>
+                          <span
+                            className={`text-xs font-mono text-zinc-400 dark:text-zinc-500 ${
+                              s.confirmed ? 'text-emerald-600 dark:text-emerald-400' : ''
+                            }`}
+                          >
+                            {"\"" + (s.fromName || "(bare address)") + "\""}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => toggleConfirmSet(s.id)}
+                            className={`rounded px-1.5 py-0.5 text-xs ${
+                              s.confirmed
+                                ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
+                                : 'bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400'
+                            }`}
+                          >
+                            {s.confirmed ? 'Confirmed' : 'Confirm'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => removeSet(s.id)}
+                            className="rounded px-1.5 py-0.5 text-xs text-zinc-400 hover:text-red-600 dark:text-zinc-500 dark:hover:text-red-400"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                        <div className="grid grid-cols-2 gap-1 text-xs">
+                          <div>
+                            <span className="text-zinc-400">Subject</span>
+                            <div className="truncate text-zinc-700 dark:text-zinc-200">{s.subject}</div>
+                          </div>
+                          <div>
+                            <span className="text-zinc-400">Test</span>
+                            <span className={`text-zinc-400 ${s.testResult === 'delivered' ? 'text-emerald-600' : s.testResult === 'failed' ? 'text-red-600' : ''}`}>
+                              {s.tested ? (s.testResult === 'delivered' ? 'Delivered' : 'Failed') : 'Not tested'}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="mt-1 flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => testRotationSet(s.id)}
+                            disabled={s.tested || rotationQueueBusy}
+                            className="rounded-lg border border-zinc-300 px-2 py-1 text-xs text-zinc-600 hover:bg-black/5 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-white/5"
+                          >
+                            {rotationQueueBusy ? 'Testing…' : 'Test this set'}
+                          </button>
+                          <div className="ml-auto text-[10px] text-zinc-400 dark:text-zinc-500">
+                            {s.id.startsWith('draft-') ? 'New draft' : 'Existing rotation'}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRotationQueueOpen(false);
+                    setRotationQueueSets([]);
+                  }}
+                  className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600 hover:bg-black/5 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-white/5"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void finalizeRotationQueue()}
+                  disabled={
+                    rotationQueueBusy ||
+                    rotationQueueSets.filter((s) => s.confirmed).length === 0
+                  }
+                  className="rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-violet-500 disabled:opacity-50"
+                >
+                  {rotationQueueBusy ? 'Finalizing…' : 'Finalize confirmed sets → rotation'}
+                </button>
+              </div>
+            </Modal>
+          )}
           {/* Task 33 — the isolation-diagnostic panel (opt-in, alongside edit). */}
           {diagnosticsSection}
-
           {/* Human-assisted fallback: use a recipient already in the queue, or
               type a new one, as this campaign's test target from now on.
               Bug fix (2026-09-28): this used to only appear AFTER the automated
