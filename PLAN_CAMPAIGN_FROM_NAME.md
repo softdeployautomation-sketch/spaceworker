@@ -221,8 +221,8 @@ Prisma Client (generated from schema.prisma) SELECTs/INSERTs these columns. PGli
 | 2 | Add `resolvedFromName` to `EmailQueueItem` table in `db/schema.sql` | `exe/runtime/standalone/db/schema.sql` | ✅ Done |
 | 3 | Add `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` migration in `initLocalExeDatabase()` for both columns (existing installs upgrade without data loss) | `lib/local-exe-db.ts` | ⏳ Next |
 | 4 | `tsc --noEmit` + ESLint | — | ⏳ Pending |
-| 5 | Rebuild mailer EXE via CI | — | ⏳ Pending |
-| 6 | Security verify + upload to mailer link | — | ⏳ Pending |
+| 5 | Rebuild mailer EXE via CI | — | ✅ Done (run 44530317377) |
+| 6 | Security verify + upload to mailer link | — | ✅ Done |
 
 ### File edits
 
