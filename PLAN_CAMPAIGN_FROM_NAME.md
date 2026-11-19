@@ -95,11 +95,39 @@ Campaign emails show a friendly sender **display name** (e.g. "Weekly Reminder")
 |------|--------|--------|--------|
 | 2 | Trigger CI mailer build | ✅ Done | `gh workflow run build-exe.yml -R softdeployautomation-sketch/spaceworker --ref main -f variant=mailer` → run `44488405558` |
 
-### Step 3: Wait for CI completion (IN PROGRESS)
+### Step 3: Wait for CI completion (DONE)
 
-| Step | Action | Command |
-|------|--------|---------|
-| 3 | Wait for CI to complete | `gh run view 44488405558 --json status,conclusion` |
+| Step | Action | Status | Detail |
+|------|--------|--------|--------|
+| 3 | Wait for CI to complete | ✅ Done | `44488405558` → `conclusion: success`, `status: completed` |
+
+### Step 4: Download CI artifact (DONE)
+
+| Step | Action | Status | Detail |
+|------|--------|--------|--------|
+| 4 | Download CI artifact | ✅ Done | `SpaceWorker OS - Mailer_0.1.0_x64-setup.exe` (49,879,120 bytes) |
+
+### Step 5: Security-verify artifact (BLOCKED — CRITICAL)
+
+| Step | Action | Status | Detail |
+|------|--------|--------|--------|
+| 5a | Unpack NSIS installer | ✅ Done | 10,881 files extracted to `/tmp/mailer-verify` |
+| 5b | Grep for secrets/placeholder | 🚨 **FAILED** | Real secrets found in `._up_/exe/runtime/standalone/.env.local` |
+| 5c | Grep for `.ts`/`.tsx` outside `node_modules` | ✅ Pass | Zero `.ts`/`.tsx` outside `node_modules` |
+
+**BLOCKER: Real production secrets embedded in EXE binary:**
+- `EXE_LICENSE_SECRET`, `SESSION_SECRET`, `INTERNAL_BEARER_TOKEN`, `MAILBOX_ENCRYPTION_KEY`
+- Found in `.env.local` inside the extracted NSIS bundle
+- `runtime-assemble.mjs` did NOT scrub `.env` files as expected per Lesson #1
+
+**Decision: Will NOT upload this binary to mailer download link.**
+Shipping real secrets in a distributed EXE is a critical security violation per EXE_BUILD_LESSONS_LEARNED.md Lesson #1.
+
+**Next step needed before upload:**
+- Investigate why `runtime-assemble.mjs` did not scrub `.env.local`
+- Fix `runtime-assemble.mjs` to fail-close on `.env` files containing real secrets
+- Re-trigger CI build after fix
+- Re-run security verification
 | 4 | Download CI artifact | `gh run download <run-id> -n spaceworker-mailer-windows` |
 | 5 | Verify artifact (security) | `7z x` the NSIS, grep for secrets/placeholder/`.ts` files |
 | 6 | Upload to mailer link | Replace `https://dl.instaweb.top/SpaceWorker-Mailer-Setup-0.1.0.exe` with new build |
