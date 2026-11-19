@@ -166,5 +166,38 @@ All 12 files (schema, campaign-create, campaign-recipients, deliverability, mail
 
 ---
 
+## New: Fix tier-5 dock narrowing via `sw_wrapper` cookie
+
+### Root cause (confirmed by reading proxy.ts + wrapper-mode.ts + logout route)
+
+The `sw_wrapper` cookie (set by `GET /wrapper/devices`) persists in your browser with `path: "/"`. It narrows the dock to Devices + Settings regardless of your tier 5 status:
+
+1. **Server-side `proxy.ts:73-82`** reads `sw_wrapper` → redirects all non-allowed `/dashboard/*` paths to `/dashboard/devices`
+2. **Client-side `useNavItems()`** reads `sw_wrapper` → filters nav to Devices + Settings only
+3. **`/api/auth/logout/route.ts`** only clears `spaceworker_session` + `sw_ref` — does NOT clear `sw_wrapper` → cookie survives logout/login
+
+### Fix plan
+
+| Step | Action | Status |
+|------|--------|--------|
+| 1 | Clear `sw_wrapper` cookie in your browser (DevTools → Application → Cookies → spaceworker.top → delete `sw_wrapper`) | ⏳ You do this |
+| 2 | Add `sw_wrapper` cookie clearing to `/api/auth/logout/route.ts` (beside existing `sw_ref` clearing) | ✅ Done |
+| 3 | `tsc --noEmit` passes (0 errors) | ✅ Done |
+| 4 | `eslint` clean on touched file | ✅ Done |
+| 5 | Commit + push to `main` | ⏳ |
+| 6 | Trigger CI Build & Deploy | ⏳ |
+| 7 | Verify on VPS | ⏳ |
+
+### File to modify
+- `app/api/auth/logout/route.ts` — add `sw_wrapper` cookie clear (same attrs as `sw_ref`: `httpOnly`, `secure`, `sameSite: "lax"`, `path: "/"`, `maxAge: 0`)
+
+### Verification gates
+- [ ] `tsc --noEmit` 0 errors
+- [ ] `eslint` clean
+- [ ] Logout clears `sw_wrapper` cookie (inspect DevTools → Application → Cookies after logout)
+- [ ] Full dock returns after logout/login
+
+---
+
 **PLAN ONLY beyond this point.** No CI build will be triggered until you give the go-ahead.
 
