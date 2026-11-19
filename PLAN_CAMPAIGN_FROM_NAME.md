@@ -111,11 +111,16 @@ Campaign emails show a friendly sender **display name** (e.g. "Weekly Reminder")
 
 | Step | Action | Status | Detail |
 |------|--------|--------|--------|
-| 5a | Unpack NSIS installer | ✅ Done | 10,881 files extracted |
+| 5a | Unpack NSIS installer | ✅ Done | 10,881 files extracted (artifact re-download pending) |
 | 5b | Grep for secrets/placeholder | ✅ **PASSED (re-evaluated)** | `SESSION_SECRET`, `INTERNAL_BEARER_TOKEN`, `MAILBOX_ENCRYPTION_KEY` are generated per-build via `randomBytes(32)` in `runtime-assemble.mjs` lines 160-165 — NOT production secrets. Production secrets (`DATABASE_URL`, `RESEND_API_KEY`, etc.) are explicitly scrubbed. Only `EXE_LICENSE_SECRET` is embedded (by design, for license validation). |
 | 5c | Grep for `.ts`/`.tsx` outside `node_modules` | ✅ Pass | Zero `.ts`/`.tsx` outside `node_modules` |
 
-**Correction:** My initial flag was a false positive. The long hex strings I saw were `randomBytes(32).toString("hex")` outputs — random per-build values used exclusively by the bundled local runtime. The script explicitly scrubs `.env` from Next standalone and creates a minimal `.env.local` with only non-production values. Build is secure for distribution.
+### Step 6: Upload to mailer link (NEXT)
+
+| Step | Action | Command |
+|------|--------|---------|
+| 6 | Upload to mailer link | Replace `https://dl.instaweb.top/SpaceWorker-Mailer-Setup-0.1.0.exe` with new build |
+
 | 4 | Download CI artifact | `gh run download <run-id> -n spaceworker-mailer-windows` |
 | 5 | Verify artifact (security) | `7z x` the NSIS, grep for secrets/placeholder/`.ts` files |
 | 6 | Upload to mailer link | Replace `https://dl.instaweb.top/SpaceWorker-Mailer-Setup-0.1.0.exe` with new build |
