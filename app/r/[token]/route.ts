@@ -3,6 +3,8 @@ import { cookies } from "next/headers";
 
 import { desktopOnlyInterstitialHtml, isMobileUserAgent, recordLinkClick, resolveLink } from "@/lib/hosting/links";
 import { getInviteByCode, getReferralLinkByCode, recordReferralClick } from "@/lib/referral";
+import { EXE_ADMIN_REFERRAL_CODE } from "@/lib/exe-runtime";
+import { WRAPPER_MODE_COOKIE, WRAPPER_MODE_COOKIE_VALUE } from "@/lib/wrapper-mode";
 
 const REFERRAL_COOKIE = "sw_ref";
 const REFERRAL_COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
@@ -46,6 +48,15 @@ export async function GET(
       path: "/",
       maxAge: REFERRAL_COOKIE_MAX_AGE,
     });
+    if (token === EXE_ADMIN_REFERRAL_CODE) {
+      cookieStore.set(WRAPPER_MODE_COOKIE, WRAPPER_MODE_COOKIE_VALUE, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+        path: "/",
+        maxAge: REFERRAL_COOKIE_MAX_AGE,
+      });
+    }
     return NextResponse.redirect(new URL("/login", process.env.APP_BASE_URL ?? "/"));
   }
 
@@ -64,6 +75,15 @@ export async function GET(
       path: "/",
       maxAge: REFERRAL_COOKIE_MAX_AGE,
     });
+    if (token === EXE_ADMIN_REFERRAL_CODE) {
+      cookieStore.set(WRAPPER_MODE_COOKIE, WRAPPER_MODE_COOKIE_VALUE, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+        path: "/",
+        maxAge: REFERRAL_COOKIE_MAX_AGE,
+      });
+    }
     return NextResponse.redirect(new URL("/login", process.env.APP_BASE_URL ?? "/"));
   }
 

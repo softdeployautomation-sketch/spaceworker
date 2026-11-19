@@ -7,7 +7,7 @@ import { AuthForm } from "@/components/auth-form";
 import { getSession } from "@/lib/auth";
 import { hasAccessGate } from "@/lib/referral";
 import { EXE_ADMIN_REFERRAL_CODE } from "@/lib/exe-runtime";
-import { WRAPPER_MODE_COOKIE, WRAPPER_MODE_COOKIE_VALUE } from "@/lib/wrapper-mode";
+
 
 export const metadata: Metadata = { title: "Sign in" };
 
@@ -40,31 +40,22 @@ export default async function LoginPage({
   // enforced later at signup, not here — this only decides "may they see the form".
   let hasAccess = refCookie ? await hasAccessGate(refCookie) : false;
 
-  // TASK_XDEVICE — when the EXE's admin referral code brought this visitor in
-  // (via /r/:code redirect setting sw_ref, or via ?ref=CODE directly), stamp the
-  // sw_wrapper cookie so wrapper mode activates on the dashboard (devices +
-  // settings only). This runs for both entry paths so the EXE always gets
-  // wrapper scope regardless of which link the binary loads.
-  if (refCookie === EXE_ADMIN_REFERRAL_CODE || refQuery === EXE_ADMIN_REFERRAL_CODE) {
-    cookieStore.set(WRAPPER_MODE_COOKIE, WRAPPER_MODE_COOKIE_VALUE, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      path: "/",
-      maxAge: 60 * 60 * 24 * 30,
-    });
-  }
+  // TASK_XDEVICE — when the EXE's admin referral code came as ?ref=CODE (not via
+  // /r/:code which already stamped sw_wrapper), stamp it here. Next 16 forbids
+  // cookies().set() during Server Component render, so we redirect to a Route
+  // Handler that stamps the cookie and sends us back.
+  //
+  // We only check refQuery here, not refCookie: if refCookie already equals the
+  // EXE code, /r/:code already stamped sw_wrapper on the way in — no redirect needed.
+  const needsReferralCookie = !hasAccess && !!refQuery;
+  const needsWrapperCookie = refQuery === EXE_ADMIN_REFERRAL_CODE;
 
-  if (!hasAccess && refQuery) {
-    hasAccess = await hasAccessGate(refQuery);
-    if (!hasAccess) redirect("/?error=referral_required");
-    cookieStore.set(REFERRAL_COOKIE, refQuery, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      path: "/",
-      maxAge: 60 * 60 * 24 * 30,
-    });
+  if (needsReferralCookie || needsWrapperCookie) {
+    const params = new URLSearchParams();
+    if (needsReferralCookie) params.set("ref", refQuery!);
+    if (needsWrapperCookie) params.set("wrapper", "true");
+    params.set("redirect", "/login");
+    redirect(`/api/auth/set-referral-cookie?${params.toString()}`);
   }
 
   if (!hasAccess) {
