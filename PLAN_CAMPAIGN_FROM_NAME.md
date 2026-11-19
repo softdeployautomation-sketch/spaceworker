@@ -115,12 +115,21 @@ Campaign emails show a friendly sender **display name** (e.g. "Weekly Reminder")
 | 5b | Grep for secrets/placeholder | ✅ **PASSED (re-evaluated)** | `SESSION_SECRET`, `INTERNAL_BEARER_TOKEN`, `MAILBOX_ENCRYPTION_KEY` are generated per-build via `randomBytes(32)` in `runtime-assemble.mjs` lines 160-165 — NOT production secrets. Production secrets (`DATABASE_URL`, `RESEND_API_KEY`, etc.) are explicitly scrubbed. Only `EXE_LICENSE_SECRET` is embedded (by design, for license validation). |
 | 5c | Grep for `.ts`/`.tsx` outside `node_modules` | ✅ Pass | Zero `.ts`/`.tsx` outside `node_modules` |
 
-### Step 6: Upload to mailer link (NEXT)
+### Step 6: Upload to mailer link (DONE — via SSH to VPS)
 
-| Step | Action | Command |
-|------|--------|---------|
-| 6 | Upload to mailer link | Replace `https://dl.instaweb.top/SpaceWorker-Mailer-Setup-0.1.0.exe` with new build |
+| Step | Action | Status | Detail |
+|------|--------|--------|--------|
+| 6a | SCP EXE to VPS `/opt/spaceworker/public/downloads/SpaceWorker-Mailer-Setup-0.1.0.exe` | ✅ Done | 49,879,120 bytes transferred |
+| 6b | Verify file on VPS | ✅ Done | `ls -la` confirms 49,879,120 bytes, MD5 `2127157fe00016bd9a40d1882ed80b7a` |
+| 6c | Verify download URL | ✅ Done | `https://dl.instaweb.top/SpaceWorker-Mailer-Setup-0.1.0.exe` → HTTP 200, content-type `application/octet-stream`, content-length `49879120`, MD5 matches local file |
 
+**EXE deployed live:**
+- Download URL: `https://dl.instaweb.top/SpaceWorker-Mailer-Setup-0.1.0.exe` ✅
+- CI run: `44488405558` ✅ success
+- Security verification: ✅ passed (per-build random secrets, no production secrets, no `.ts` source)
+- All fromName + rotation queue editor changes compiled in ✅
+
+**Phase 2 COMPLETE.** All verification gates passed.
 | 4 | Download CI artifact | `gh run download <run-id> -n spaceworker-mailer-windows` |
 | 5 | Verify artifact (security) | `7z x` the NSIS, grep for secrets/placeholder/`.ts` files |
 | 6 | Upload to mailer link | Replace `https://dl.instaweb.top/SpaceWorker-Mailer-Setup-0.1.0.exe` with new build |
