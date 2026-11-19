@@ -15,7 +15,9 @@ export async function resolveFromAddressesByMailbox(
     where: { id: { in: mailboxIds } },
     select: { id: true, fromAddresses: true },
   });
-  for (const r of rows) out[r.id] = r.fromAddresses;
+  // Coalesce null to [] so buildQueueItemRows never receives undefined/null
+  // from a mailbox whose fromAddresses column hasn't been backfilled yet.
+  for (const r of rows) out[r.id] = (r.fromAddresses ?? []) as string[];
   return out;
 }
 

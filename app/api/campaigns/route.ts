@@ -29,14 +29,23 @@ export async function GET() {
     );
   }
 
-  const campaigns = await prisma.emailCampaign.findMany({
-    where: { userId: session.userId },
-    include: {
-      variants: { orderBy: { createdAt: "asc" } },
-      _count: { select: { items: true } },
-    },
-    orderBy: { createdAt: "desc" },
-  });
+  let campaigns;
+  try {
+    campaigns = await prisma.emailCampaign.findMany({
+      where: { userId: session.userId },
+      include: {
+        variants: { orderBy: { createdAt: "asc" } },
+        _count: { select: { items: true } },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Unknown error loading campaigns";
+    return NextResponse.json(
+      { error: `Failed to load campaigns: ${message}` },
+      { status: 500 }
+    );
+  }
 
   return NextResponse.json(campaigns);
 }
@@ -372,34 +381,43 @@ export async function POST(req: Request) {
     }
   }
 
-  const created = await createCampaign({
-    userId: session.userId,
-    name,
-    mailboxIds,
-    ...(decoupled ? { subjects, bodies } : { variants }),
-    // Task 29, item 5 — independent sender display names rotated alongside
-    // subjects/bodies. Forwarded only when the client sent an explicit array.
-    ...(fromNames.length > 0 ? { fromNames } : {}),
-    // Task 144 — "html" (default) or "text" (plain-text-only sends).
-    ...(typeof body.bodyFormat === "string" ? { bodyFormat: body.bodyFormat } : {}),
-    recipients: sendRecipients,
-    rotateEvery,
-    batchSize,
-    // Task 35 — send pacing bounds (seconds); defaults 5/45 preserved in the
-    // drain route when omitted on existing campaigns.
-    minSendDelaySeconds,
-    maxSendDelaySeconds,
-    searchJobId,
-    testRecipientOverride,
-    // Task 30, item 3 — opt-in link cloaking (no-op unless bodies contain links).
-    cloakLinks: body.cloakLinks === true,
-    // Only forward an explicit array (including empty — a real "nothing
-    // selected" choice); anything else (missing, wrong type) stays undefined so
-    // createCampaign falls back to its legacy "cloak everything detected" path.
-    ...(Array.isArray(body.cloakedUrls)
-      ? { cloakedUrls: body.cloakedUrls.map((u) => String(u)).filter((u) => u.length > 0) }
-      : {}),
-  });
+  let created;
+  try {
+    created = await createCampaign({
+      userId: session.userId,
+      name,
+      mailboxIds,
+      ...(decoupled ? { subjects, bodies } : { variants }),
+      // Task 29, item 5 — independent sender display names rotated alongside
+      // subjects/bodies. Forwarded only when the client sent an explicit array.
+      ...(fromNames.length > 0 ? { fromNames } : {}),
+      // Task 144 — "html" (default) or "text" (plain-text-only sends).
+      ...(typeof body.bodyFormat === "string" ? { bodyFormat: body.bodyFormat } : {}),
+      recipients: sendRecipients,
+      rotateEvery,
+      batchSize,
+      // Task 35 — send pacing bounds (seconds); defaults 5/45 preserved in the
+      // drain route when omitted on existing campaigns.
+      minSendDelaySeconds,
+      maxSendDelaySeconds,
+      searchJobId,
+      testRecipientOverride,
+      // Task 30, item 3 — opt-in link cloaking (no-op unless bodies contain links).
+      cloakLinks: body.cloakLinks === true,
+      // Only forward an explicit array (including empty — a real "nothing
+      // selected" choice); anything else (missing, wrong type) stays undefined so
+      // createCampaign falls back to its legacy "cloak everything detected" path.
+      ...(Array.isArray(body.cloakedUrls)
+        ? { cloakedUrls: body.cloakedUrls.map((u) => String(u)).filter((u) => u.length > 0) }
+        : {}),
+    });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Unknown error creating campaign";
+    return NextResponse.json(
+      { error: `Failed to create campaign: ${message}` },
+      { status: 500 }
+    );
+  }
 
   // Response shape kept compatible with the Campaigns page: the frontend reads
   // only data.campaign.id (app/dashboard/campaigns/page.tsx), but we preserve the
