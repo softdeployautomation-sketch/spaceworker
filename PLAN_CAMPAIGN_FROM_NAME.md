@@ -89,12 +89,17 @@ Campaign emails show a friendly sender **display name** (e.g. "Weekly Reminder")
 - `git status --short` — clean (exit 0) ✅
 - Removed blocking worktree `sw-backup-main` ✅
 
-### Step 2: Trigger CI mailer build (NEXT)
+### Step 2: Trigger CI mailer build (DONE)
+
+| Step | Action | Status | Detail |
+|------|--------|--------|--------|
+| 2 | Trigger CI mailer build | ✅ Done | `gh workflow run build-exe.yml -R softdeployautomation-sketch/spaceworker --ref main -f variant=mailer` → run `44488405558` |
+
+### Step 3: Wait for CI completion (IN PROGRESS)
 
 | Step | Action | Command |
 |------|--------|---------|
-| 2 | Trigger CI mailer build | `gh workflow run build-exe.yml -R softdeployautomation-sketch/spaceworker --ref main -f variant=mailer` |
-| 3 | Wait for CI to complete | `gh run view <run-id> --json status,conclusion` |
+| 3 | Wait for CI to complete | `gh run view 44488405558 --json status,conclusion` |
 | 4 | Download CI artifact | `gh run download <run-id> -n spaceworker-mailer-windows` |
 | 5 | Verify artifact (security) | `7z x` the NSIS, grep for secrets/placeholder/`.ts` files |
 | 6 | Upload to mailer link | Replace `https://dl.instaweb.top/SpaceWorker-Mailer-Setup-0.1.0.exe` with new build |
