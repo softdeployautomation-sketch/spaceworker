@@ -120,6 +120,15 @@ export function initLocalExeDatabase(): Promise<void> {
         const ddl = readFileSync(schemaSqlPath(), "utf8");
         await instance.exec(ddl);
       }
+      // Migration fallback: add columns that shipped schema.sql may be missing
+      // (stale EXE builds). Idempotent — ADD COLUMN IF NOT EXISTS is a no-op
+      // when the column already exists.
+      await instance.exec(
+        `ALTER TABLE "EmailCampaign" ADD COLUMN IF NOT EXISTS "fromNames" TEXT[] DEFAULT ARRAY[]::TEXT[]`,
+      );
+      await instance.exec(
+        `ALTER TABLE "EmailQueueItem" ADD COLUMN IF NOT EXISTS "resolvedFromName" TEXT`,
+      );
       const prisma = getLocalExePrismaSync();
       await prisma.user.upsert({
         where: { id: EXE_LOCAL_USER_ID },

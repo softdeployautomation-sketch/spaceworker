@@ -199,5 +199,51 @@ The `sw_wrapper` cookie (set by `GET /wrapper/devices`) persists in your browser
 
 ---
 
+---
+## NEW: Fix EXE campaign load/create failure (stale shipped `db/schema.sql`)
+
+### Root cause (confirmed)
+
+The EXE ships `exe/runtime/standalone/db/schema.sql`, generated at CI build time by `prisma migrate diff --from-empty --to-schema-datamodel`. This file is **missing two columns** added to `prisma/schema.prisma` by the from-name feature:
+
+| Table | Column | In schema.prisma | In EXE's schema.sql |
+|-------|--------|-----------------|---------------------|
+| `EmailCampaign` | `fromNames TEXT[] DEFAULT ARRAY[]::TEXT[]` | ✅ Yes (line 842) | ❌ Missing |
+| `EmailQueueItem` | `resolvedFromName TEXT` | ✅ Yes (line 1014) | ❌ Missing |
+
+Prisma Client (generated from schema.prisma) SELECTs/INSERTs these columns. PGlite (built from schema.sql) doesn't have them → `column "fromNames" does not exist` → 500 → "Failed to load campaign" / "Failed to create campaign". Mailboxes work because the `Mailbox` table exists unchanged.
+
+### Fix plan
+
+| Step | Action | File | Status |
+|------|--------|------|--------|
+| 1 | Add `fromNames` to `EmailCampaign` table in `db/schema.sql` | `exe/runtime/standalone/db/schema.sql` | ✅ Done |
+| 2 | Add `resolvedFromName` to `EmailQueueItem` table in `db/schema.sql` | `exe/runtime/standalone/db/schema.sql` | ✅ Done |
+| 3 | Add `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` migration in `initLocalExeDatabase()` for both columns (existing installs upgrade without data loss) | `lib/local-exe-db.ts` | ⏳ Next |
+| 4 | `tsc --noEmit` + ESLint | — | ⏳ Pending |
+| 5 | Rebuild mailer EXE via CI | — | ⏳ Pending |
+| 6 | Security verify + upload to mailer link | — | ⏳ Pending |
+
+### File edits
+
+**`exe/runtime/standalone/db/schema.sql`:**
+- `EmailCampaign`: add `"fromNames" TEXT[] DEFAULT ARRAY[]::TEXT[],` after `"promotedTemplateId" TEXT,`
+- `EmailQueueItem`: add `"resolvedFromName" TEXT,` after `"resolvedFromAddress" TEXT,`
+
+**`lib/local-exe-db.ts`:**
+- After `await instance.exec(ddl);` (or as a fallback when marker table already exists), add:
+  ```typescript
+  await instance.exec(`ALTER TABLE "EmailCampaign" ADD COLUMN IF NOT EXISTS "fromNames" TEXT[] DEFAULT ARRAY[]::TEXT[]`);
+  await instance.exec(`ALTER TABLE "EmailQueueItem" ADD COLUMN IF NOT EXISTS "resolvedFromName" TEXT`);
+  ```
+
+### Verification gates
+- [ ] `tsc --noEmit` 0 errors
+- [ ] `eslint` clean on both touched files
+- [ ] CI `build-exe.yml` variant=mailer succeeds
+- [ ] CI artifact contains `*.exe` NSIS installer
+- [ ] Artifact security verification: no secrets, no placeholder, zero `.ts`/`.tsx` outside `node_modules`
+- [ ] New EXE uploaded to mailer download link
+
 **PLAN ONLY beyond this point.** No CI build will be triggered until you give the go-ahead.
 
