@@ -275,6 +275,47 @@ variant's build-time state cannot leak in before shipping.
 
 ---
 
+## 17. (TASK_254) EXE local PGlite schema drift — shipped `db/schema.sql` must match `prisma/schema.prisma`
+
+**The EXE ships `exe/runtime/standalone/db/schema.sql`, generated at CI build time by `prisma migrate diff --from-empty --to-schema-datamodel`. Prisma Client is generated from `prisma/schema.prisma`, but PGlite inside the EXE is built from `schema.sql`. If a schema change (new column, new table) lands in `schema.prisma` but `schema.sql` is not regenerated, Prisma Client will SELECT/INSERT columns that PGlite doesn't have → `column "fromNames" does not exist` → 500 errors → "Failed to load campaign" / "Failed to create campaign".**
+
+**This is silent on fresh installs:** the EXE's local DB is created from `schema.sql`, so every table exists but is missing columns. Everything that touches those columns fails at SQL level, not code level.
+
+**Fix:** Whenever `prisma/schema.prisma` changes for a mailer EXE feature, regenerate `exe/runtime/standalone/db/schema.sql` from it (`prisma migrate diff --from-empty --to-schema-datamodel`), AND add `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements in `lib/local-exe-db.ts` `initLocalExeDatabase()` so existing installs can upgrade their local DB without data loss. Verify both the fresh-install path (schema.sql has the columns) and the upgrade path (ALTER TABLE adds them to an older local DB).
+
+**Verify:** on a fresh EXE install, create a campaign and hit `/api/campaigns` — if it 500s, `schema.sql` is stale.
+
+---
+
+## 18. (TASK_254) Null-safety for optional mailbox fields — `fromAddresses[0]` throws when null
+
+**`app/api/internal/mail-queue-drain/route.ts` line 243 did `mailbox.fromAddresses[0] || mailbox.username`. When `fromAddresses` is `null` (user added a mailbox on the EXE without setting from addresses), this throws `TypeError: Cannot read properties of null (reading '0')`. Every queued item was caught by the item-level try/catch → marked `"failed"` → nothing was sent. The web app worked because `fromAddresses` was set when adding the mailbox there.**
+
+**`lib/campaign-recipients.ts` line 20 already used `(r.fromAddresses ?? [])` — null-safe. `lib/deliverability.ts` line 146 already used `opts.mailbox.fromAddresses?.[0]` — null-safe. The drain route was the only place still using bare `[0]`.**
+
+**Fix:** change `mailbox.fromAddresses[0]` → `mailbox.fromAddresses?.[0] || mailbox.username`. Add `console.error` in drain route and `runTestSend` catch blocks so SMTP failures are visible rather than opaque. When auditing any file that reads `mailbox.fromAddresses`, check every `[0]` access — not just one.
+
+---
+
+## 19. (TASK_254) From address is REQUIRED on the EXE — username alone is not enough
+
+**Null-safety alone (`fromAddresses?.[0] || mailbox.username`) is NOT enough. If `fromAddresses` is empty/null AND the SMTP username isn't a valid email address (e.g. `"admin"`), there is no usable From address. The EXE sent nothing until the user added a proper `from address` in the mailbox settings.**
+
+**On the EXE (mailer variant), users MUST set a valid from address before sending. Fix:**
+- **At mailbox creation/edit (EXE-only):** require `fromAddresses` to contain at least one valid email address — block save otherwise, with a clear message ("A from address is required before you can send campaigns").
+- **In the drain route:** if `fromAddresses` is empty/null AND `mailbox.username` is not a valid email, mark the item `"failed"` with a clear error ("No from address configured for this mailbox — add one in mailbox settings") instead of sending with an invalid from.
+- **Web app:** same validation is recommended for consistency, though the web app had `fromAddresses` set in this case.
+
+**Don't let users send without a from address — the SMTP server may reject it, or the recipient server may filter it as spam.**
+
+---
+
+## 20. (TASK_254) Don't blame tier/entitlement for EXE sending failures
+
+**The mailer EXE is a standalone — tier is a web-app concept, license gating is separate. A tier-5 user seeing "campaigns fail to load" or "messages don't send" on the EXE is NOT a tier problem. Possible real causes: (a) stale `schema.sql` missing columns (§17), (b) null `fromAddresses[0]` deref (§18), (c) missing from address (§19), (d) SMTP host validation rejecting the host, (e) recipient server filtering after SMTP acceptance. Diagnose from the actual error (check `errorCategory`, `error` text, `console.error` output), not from the account tier.**
+
+---
+
 ## Checklist for the next EXE build (Vantra, or a SpaceWorker mailer/combined/
 automation variant)
 
@@ -306,6 +347,10 @@ automation variant)
 - [ ] Any host used for both a human page and a machine API has SEPARATE
       constants (e.g. `LICENSE_PURCHASE_URL` vs `HOSTED_APP_URL`) so repointing
       one can't break the other (§15).
-- [ ] The fix has been verified against the SHIPPED artifact on the target OS,
+- [ ] **EXE local database schema (`exe/runtime/standalone/db/schema.sql`) has been regenerated from `prisma/schema.prisma` for any schema changes — and `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` exists in `lib/local-exe-db.ts` for existing installs.**
+- [ ] **Every `mailbox.fromAddresses[0]` (and similar bare `[0]` access on optional arrays) has been audited and made null-safe (`?.[]` or `?? []`).**
+- [ ] **From address validation: mailbox creation/edit on the EXE mailer variant requires at least one valid `fromAddresses` email — save is blocked with a clear message otherwise.**
+- [ ] **Drain route: if `fromAddresses` is empty/null AND `mailbox.username` is not a valid email, items are marked `"failed"` with a clear error — no silent sends with invalid from.**
+- [ ] Console error logging exists in drain route and test-send catch blocks so SMTP failures are visible, not opaque.
       not just the source or local dev server — especially anything in the Rust
       launcher that source-level checks never exercise (§14).

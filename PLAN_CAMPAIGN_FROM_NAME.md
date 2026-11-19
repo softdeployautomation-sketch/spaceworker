@@ -273,9 +273,9 @@ On the web app this works because `fromAddresses` is set when adding the mailbox
 | 2 | Add `console.error` logging in drain route catch block for visibility | `app/api/internal/mail-queue-drain/route.ts` | ✅ Done |
 | 3 | Add `console.error` logging in `runTestSend` catch block | `lib/deliverability.ts` | ✅ Done |
 | 4 | `tsc --noEmit` + ESLint on all touched files | — | ✅ Done |
-| 5 | Commit + push to `main` | — | ⏳ |
-| 6 | Trigger CI Build & Deploy (`build-exe.yml`, variant=mailer) | — | ⏳ |
-| 7 | Security verify + upload to mailer link | — | ⏳ |
+| 5 | Commit + push to `main` | — | ✅ Done (a99ac41) |
+| 6 | Trigger CI Build & Deploy (`build-exe.yml`, variant=mailer) | — | ✅ Done (run 44584786573) |
+| 7 | Security verify + upload to mailer link | — | ✅ Done (HTTP 200, MD5 verified) |
 
 ### File to modify — exact change
 
