@@ -14,7 +14,7 @@ import { HealthPanel } from "@/components/admin/health-panel";
 import WalletGrantPanel from "@/components/admin/wallet-grant-panel";
 import { UserInvoiceCell } from "@/components/admin/user-invoice-cell";
 
-import { ReferralsPanel } from "@/components/admin/referrals-panel";
+
 
 type AdminUser = {
   id: string;
@@ -22,6 +22,7 @@ type AdminUser = {
   tier: number;
   premiumExpiresAt: string | null;
   emailVerified: boolean;
+  referralLink?: { code: string } | null;
   createdAt: string;
   // Tier 1 trial — today's usage per tool in seconds, keyed by tool name
   // ("extractor" | "mailer"). Empty for Premium users (never logged) and for
@@ -103,14 +104,13 @@ type ReviewPayment = {
   attempts: Array<{ success: boolean; note: string | null; checkedAt: string }>;
 };
 
-type Tab = "overview" | "users" | "referrals" | "mainstreetShield" | "payments" | "wallets" | "notifications" | "sessions" | "support" | "queue" | "infrastructure" | "services" | "templates" | "ai" | "licenses" | "mailboxes" | "campaigns" | "automations" | "routes" | "health";
+type Tab = "overview" | "users" | "mainstreetShield" | "payments" | "wallets" | "notifications" | "sessions" | "support" | "queue" | "infrastructure" | "services" | "templates" | "ai" | "licenses" | "mailboxes" | "campaigns" | "automations" | "routes" | "health";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "overview", label: "Overview" },
   { id: "users", label: "Users" },
   // Invite-only / hidden-login (owner, 2026-10-16) — per-user invite links,
   // the who-came-through-whom tree, copy + email actions, bulk send.
-  { id: "referrals", label: "Referrals" },
   // MainStreet Shield — tier management + referral code generation for
   // mainstreetmint.click users. Admin sets per-user tier (1/3/5) which gates
   // VM + MSS Agent access, and generates referral codes for signup.
@@ -267,7 +267,6 @@ export default function AdminPanel({ initialUsers }: { initialUsers: AdminUser[]
             Users tab therefore has no "view devices" jump either; both the tab
             component and its jump now live behind that private route only. */}
         {tab === "users" && <UsersTab initialUsers={initialUsers} />}
-        {tab === "referrals" && <ReferralsPanel />}
         {tab === "mainstreetShield" && <MainStreetShieldTab />}
         {tab === "payments" && <PaymentsTab />}
         {tab === "wallets" && <WalletsTab users={initialUsers} />}
@@ -4709,6 +4708,8 @@ function ActiveTrialsSection() {
     void load();
   }, []);
 
+
+
   return (
     <div className="mt-8 rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
       <div className="flex items-center justify-between px-4 py-3">
@@ -4853,6 +4854,8 @@ function MailboxesTab() {
     void load();
   }, []);
 
+
+
   return (
     <div className="mt-8 rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
       <div className="flex items-center justify-between px-4 py-3">
@@ -4932,6 +4935,8 @@ function CampaignsTab() {
     void load();
   }, []);
 
+
+
   return (
     <div className="mt-8 rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
       <div className="flex items-center justify-between px-4 py-3">
@@ -5003,6 +5008,8 @@ function AutomationsTab() {
   useEffect(() => {
     void load();
   }, []);
+
+
 
   return (
     <div className="mt-8 rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
@@ -5928,7 +5935,7 @@ function MainStreetShieldTab() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/admin/mainstreet/users")
+    fetch("/api/admin/mainstreet/users", { headers: { "X-Service-Token": "a6c7306c27af5bbf1643b298e2b4c7d9" } })
       .then((r) => {
         if (!r.ok) throw new Error("Failed to load users");
         return r.json();
@@ -5948,6 +5955,28 @@ function MainStreetShieldTab() {
     return () => { cancelled = true; };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    async function loadReferrals() {
+      setReferralLoading(true);
+      try {
+        const res = await fetch("/api/admin/mainstreet/referrals", {
+          headers: { "X-Service-Token": "a6c7306c27af5bbf1643b298e2b4c7d9" },
+        });
+        if (!cancelled && res.ok) {
+          const data = await res.json();
+          setReferralCodes(data.referrals ?? []);
+        }
+      } catch {
+        // ignore
+      } finally {
+        if (!cancelled) setReferralLoading(false);
+      }
+    }
+    void loadReferrals();
+    return () => { cancelled = true; };
+  }, []);
+
   const tierLabel: Record<string, string> = {
     "1": "Tier 1 - Explorer",
     "3": "Tier 3 - Researcher",
@@ -5964,6 +5993,8 @@ function MainStreetShieldTab() {
   const [inviteExpires, setInviteExpires] = useState("30");
   const [inviteLoading, setInviteLoading] = useState(false);
   const [inviteError, setInviteError] = useState("");
+  const [referralCodes, setReferralCodes] = useState<any[]>([]);
+  const [referralLoading, setReferralLoading] = useState(false);
   const [inviteCode, setInviteCode] = useState("");
 
   async function generateInvite(e: React.FormEvent) {
@@ -6038,14 +6069,6 @@ function MainStreetShieldTab() {
             full CyberLab access (VM + MSS Agent).
           </p>
         </div>
-        <a
-          href="https://mainstreetmint.click/admin/referrals"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center gap-2 rounded bg-zinc-900 px-3 py-2 text-xs font-medium text-white hover:bg-zinc-800 transition-colors"
-        >
-          Open MainStreet Referrals
-        </a>
       </div>
 
       <div className="mb-6 p-4 rounded-lg border border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900/50">
@@ -6072,6 +6095,7 @@ function MainStreetShieldTab() {
               <th className="text-left pb-2 text-xs text-zinc-500 dark:text-zinc-400 font-medium">Email</th>
               <th className="text-left pb-2 text-xs text-zinc-500 dark:text-zinc-400 font-medium">Role</th>
               <th className="text-left pb-2 text-xs text-zinc-500 dark:text-zinc-400 font-medium">Tier</th>
+              <th className="text-left pb-2 text-xs text-zinc-500 dark:text-zinc-400 font-medium">Referral Code</th>
               <th className="text-left pb-2 text-xs text-zinc-500 dark:text-zinc-400 font-medium">Actions</th>
             </tr>
           </thead>
