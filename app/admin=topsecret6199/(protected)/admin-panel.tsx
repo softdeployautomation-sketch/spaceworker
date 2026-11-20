@@ -103,7 +103,7 @@ type ReviewPayment = {
   attempts: Array<{ success: boolean; note: string | null; checkedAt: string }>;
 };
 
-type Tab = "overview" | "users" | "referrals" | "mainstreetReferrals" | "payments" | "wallets" | "notifications" | "sessions" | "support" | "queue" | "infrastructure" | "services" | "templates" | "ai" | "licenses" | "mailboxes" | "campaigns" | "automations" | "routes" | "health";
+type Tab = "overview" | "users" | "referrals" | "mainstreetReferrals" | "mainstreetShield" | "payments" | "wallets" | "notifications" | "sessions" | "support" | "queue" | "infrastructure" | "services" | "templates" | "ai" | "licenses" | "mailboxes" | "campaigns" | "automations" | "routes" | "health";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "overview", label: "Overview" },
@@ -115,6 +115,9 @@ const TABS: Array<{ id: Tab; label: string }> = [
   // generate/mainstreet referral codes from the same place they manage
   // spaceworker users. Opens the MainStreet Shield admin referrals page.
   { id: "mainstreetReferrals", label: "MainStreet Referrals" },
+  // MainStreet Shield — tier management for mainstreetmint.click users.
+  // Admin sets per-user tier (1/3/5) which gates VM + MSS Agent access.
+  { id: "mainstreetShield", label: "MainStreet Shield" },
   { id: "payments", label: "Payments" },
   { id: "wallets", label: "Wallets" },
   { id: "notifications", label: "Notifications" },
@@ -269,6 +272,7 @@ export default function AdminPanel({ initialUsers }: { initialUsers: AdminUser[]
         {tab === "users" && <UsersTab initialUsers={initialUsers} />}
         {tab === "referrals" && <ReferralsPanel />}
         {tab === "mainstreetReferrals" && <MainStreetReferralsTab />}
+        {tab === "mainstreetShield" && <MainStreetShieldTab />}
         {tab === "payments" && <PaymentsTab />}
         {tab === "wallets" && <WalletsTab users={initialUsers} />}
         {tab === "notifications" && <NotificationsTab />}
@@ -6058,6 +6062,190 @@ function MainStreetReferralsTab() {
             mainstreetmint.click
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// MainStreet Shield tier management tab
+// SpaceWorker admin sets per-user tier (1/3/5) on mainstreetmint.click.
+// Tier 5 = full CyberLab access (VM + MSS Agent). Tier 3 = MSS Agent only.
+// Tier 1 = dashboard + company only (auto on signup).
+// ---------------------------------------------------------------------------
+function MainStreetShieldTab() {
+  const [users, setUsers] = useState<Array<{ id: string; email: string; name: string | null; role: string; tier: string; createdAt: string }>>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/admin/mainstreet/users")
+      .then((r) => {
+        if (!r.ok) throw new Error("Failed to load users");
+        return r.json();
+      })
+      .then((data) => {
+        if (!cancelled) {
+          setUsers(data.users ?? []);
+          setLoading(false);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(err.message ?? "Failed to load users");
+          setLoading(false);
+        }
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  const tierLabel: Record<string, string> = {
+    "1": "Tier 1 - Explorer",
+    "3": "Tier 3 - Researcher",
+    "5": "Tier 5 - Full Access",
+  };
+
+  const tierDesc: Record<string, string> = {
+    "1": "Dashboard + company only. No VM, no agent.",
+    "3": "MSS Agent access. No VM creation.",
+    "5": "Full access: VM + MSS Agent + company + workflows.",
+  };
+
+  async function setTier(userId: string, tier: string) {
+    setSaving(userId);
+    try {
+      const res = await fetch("/api/admin/mainstreet/tier", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId, tier }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Failed to update tier");
+      setUsers((prev) => prev.map((u) => (u.id === userId ? { ...u, tier } : u)));
+    } catch (err: any) {
+      alert(err.message ?? "Failed to update tier");
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="rounded-xl border border-zinc-200 bg-white p-8 dark:border-zinc-800 dark:bg-zinc-900">
+        <h2 className="text-xl font-semibold tracking-tight">MainStreet Shield</h2>
+        <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">Loading users…</p>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="rounded-xl border border-zinc-200 bg-white p-8 dark:border-zinc-800 dark:bg-zinc-900">
+        <h2 className="text-xl font-semibold tracking-tight">MainStreet Shield</h2>
+        <p className="mt-1 text-sm text-red-600 dark:text-red-400">{error}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-xl border border-zinc-200 bg-white p-8 dark:border-zinc-800 dark:bg-zinc-900">
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h2 className="text-xl font-semibold tracking-tight">
+            MainStreet Shield — User Tiers
+          </h2>
+          <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+            Set per-user access tier on mainstreetmint.click. Tier 5 grants
+            full CyberLab access (VM + MSS Agent).
+          </p>
+        </div>
+        <a
+          href="https://mainstreetmint.click/admin/referrals"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-2 rounded bg-zinc-900 px-3 py-2 text-xs font-medium text-white hover:bg-zinc-800 transition-colors"
+        >
+          Open MainStreet Referrals
+        </a>
+      </div>
+
+      <div className="mb-6 p-4 rounded-lg border border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900/50">
+        <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-3">
+          Tier Guide
+        </h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          {["1", "3", "5"].map((t) => (
+            <div key={t} className="p-3 rounded border border-zinc-300 dark:border-zinc-700 bg-zinc-100 dark:bg-zinc-800/50">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="font-mono font-bold text-zinc-700 dark:text-zinc-200">{t}</span>
+                <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400 capitalize">{tierLabel[t]}</span>
+              </div>
+              <p className="text-xs text-zinc-500 dark:text-zinc-400">{tierDesc[t]}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-zinc-200 dark:border-zinc-700">
+              <th className="text-left pb-2 text-xs text-zinc-500 dark:text-zinc-400 font-medium">Email</th>
+              <th className="text-left pb-2 text-xs text-zinc-500 dark:text-zinc-400 font-medium">Role</th>
+              <th className="text-left pb-2 text-xs text-zinc-500 dark:text-zinc-400 font-medium">Tier</th>
+              <th className="text-left pb-2 text-xs text-zinc-500 dark:text-zinc-400 font-medium">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {users.map((u) => (
+              <tr key={u.id} className="border-b border-zinc-100/50 dark:border-zinc-800/50">
+                <td className="py-2 text-zinc-700 dark:text-zinc-300 font-medium">{u.email}</td>
+                <td className="py-2 text-zinc-500 capitalize">{u.role}</td>
+                <td className="py-2 font-mono">
+                  <select
+                    value={u.tier}
+                    onChange={(e) => setTier(u.id, e.target.value)}
+                    disabled={saving === u.id}
+                    className="rounded border border-zinc-300 px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 disabled:opacity-50"
+                  >
+                    <option value="1">Tier 1</option>
+                    <option value="3">Tier 3</option>
+                    <option value="5">Tier 5</option>
+                  </select>
+                </td>
+                <td className="py-2">
+                  {saving === u.id ? (
+                    <span className="text-xs text-zinc-400 italic">Saving…</span>
+                  ) : (
+                    <span className="text-xs text-zinc-500 capitalize">{tierLabel[u.tier]}</span>
+                  )}
+                </td>
+              </tr>
+            ))}
+            {users.length === 0 && (
+              <tr>
+                <td colSpan={4} className="py-4 text-center text-zinc-400 italic">
+                  No MainStreet Shield users found.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="mt-4 p-4 rounded border border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900/50">
+        <h3 className="text-xs font-mono text-zinc-500 dark:text-zinc-400 mb-3">
+          How it works
+        </h3>
+        <ol className="text-xs text-zinc-500 dark:text-zinc-400 space-y-2 list-disc list-inside">
+          <li>Users sign up via referral link on mainstreetmint.click and get Tier 1 automatically.</li>
+          <li>Tier 1 = dashboard + company details. No VM, no MSS Agent.</li>
+          <li>Tier 3 = MSS Agent access (bug hunting). No VM creation.</li>
+          <li>Tier 5 = full CyberLab access (VM + MSS Agent + all tools).</li>
+          <li>Changes take effect immediately on next page load.</li>
+        </ol>
       </div>
     </div>
   );
