@@ -379,12 +379,14 @@ These are the checks I will run after each cline task completes:
 - S0-2 — Password verification middleware — commit 6ccccda
 - S1-2 — Assets page CRUD — commit b1d3923
 
-**Recommended next priorities (pick one):**
+**In progress (handed to cline):**
+- S0-3 — Rate limiting on auth endpoints (P0) — spec at task/TASK_258_S03_RATE_LIMITING.md
 
-1. **S0-3 — Rate limiting on auth endpoints** (P0) — login/signup brute-force protection
-2. **S0-8 — Clean up test/previous users** (P1) — delete via admin Users & Tiers
+**Recommended next priorities (after S0-3):**
 
-**Deploy decision:** Commits `ce7866e`, `6ccccda`, and `b1d3923` are on `main` but NOT yet deployed to `mainstreetmint.click`. You must dispatch the deploy workflow before live verification can run for any new changes (including S1-2 AC-2 through AC-11).
+1. **S0-8 — Clean up test/previous users** (P1) — delete via admin Users & Tiers
+
+**Deploy decision:** Commits `ce7866e`, `6ccccda`, `b1d3923` are on `main` but NOT yet deployed to `mainstreetmint.click`. You must dispatch the deploy workflow before live verification can run for any new changes (including S0-3 AC-2 through AC-5).
 
 **Cloudflare research:** Part of S5-1 — will research once we reach Phase 5.
 
