@@ -5992,6 +5992,7 @@ function MainStreetShieldTab() {
   const [referralLoading, setReferralLoading] = useState(false);
   const [sub, setSub] = useState<"users" | "referrals">("users");
   const [copied, setCopied] = useState<string | null>(null);
+  const [copiedUserId, setCopiedUserId] = useState<string | null>(null);
   const [inviteCode, setInviteCode] = useState("");
 
   async function generateInvite(e: React.FormEvent) {
@@ -6127,7 +6128,9 @@ function MainStreetShieldTab() {
                 </tr>
               </thead>
               <tbody>
-                {users.map((u) => (
+                {users.map((u) => {
+                  const referralCode = u.referralLink?.code;
+                  return (
                   <tr key={u.id} className="border-b border-zinc-100/50 dark:border-zinc-800/50">
                     <td className="py-2 text-zinc-700 dark:text-zinc-300 font-medium">
                       {u.email}
@@ -6145,9 +6148,32 @@ function MainStreetShieldTab() {
                         <option value="5">Tier 5</option>
                       </select>
                     </td>
-                    <td className="py-2 font-mono">{u.referralLink?.code ?? "—"}</td>
+                    <td className="py-2 font-mono">
+                      {referralCode ? (
+                        <>
+                          <span className="text-xs break-all">
+                            https://mainstreetmint.click/r/{referralCode}
+                          </span>{" "}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const link = `https://mainstreetmint.click/r/${referralCode}`;
+                              void copyToClipboard(link);
+                              setCopiedUserId(u.id);
+                              setTimeout(() => setCopiedUserId(null), 2000);
+                            }}
+                            disabled={copiedUserId === u.id}
+                            className="text-xs text-brand-600 hover:text-brand-800 dark:text-brand-400 dark:hover:text-brand-300 underline underline-offset-4"
+                          >
+                            {copiedUserId === u.id ? "Copied ✓" : "Copy"}
+                          </button>
+                        </>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
                   </tr>
-                ))}
+                )})}
                 {users.length === 0 && (
                   <tr>
                     <td colSpan={4} className="py-4 text-center text-zinc-400 italic">
@@ -6203,11 +6229,8 @@ function MainStreetShieldTab() {
         )}
         {inviteCode && (
           <div className="mt-4 p-4 rounded border border-emerald-200 bg-emerald-50 dark:border-emerald-500/30 dark:bg-emerald-900/20">
-            <p className="text-xs font-mono text-emerald-800 dark:text-emerald-400 mb-2">
-              Referral code: {inviteCode}
-            </p>
             <p className="text-xs text-zinc-500 dark:text-zinc-400 mb-3 break-all">
-              https://mainstreetmint.click/signup?ref={inviteCode}
+              https://mainstreetmint.click/signup?ref=${inviteCode}
             </p>
             <button
               type="button"
