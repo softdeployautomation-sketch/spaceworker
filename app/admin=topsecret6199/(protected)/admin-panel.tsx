@@ -6255,7 +6255,7 @@ function MainStreetShieldTab() {
                   <tr key={c.code} className="border-b border-zinc-100/50 dark:border-zinc-800/50">
                     <td className="py-2 font-mono text-xs">{c.code}</td>
                     <td className="py-2 text-xs text-zinc-600 dark:text-zinc-400">
-                      {c.email ?? "—"}
+                      {c.referrer?.email ?? c.email ?? "—"}
                     </td>
                     <td className="py-2 text-xs">{c.status ?? "active"}</td>
                     <td className="py-2 text-xs text-zinc-500 dark:text-zinc-400">
