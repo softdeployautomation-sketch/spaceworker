@@ -103,7 +103,7 @@ type ReviewPayment = {
   attempts: Array<{ success: boolean; note: string | null; checkedAt: string }>;
 };
 
-type Tab = "overview" | "users" | "referrals" | "mainstreetReferrals" | "mainstreetShield" | "payments" | "wallets" | "notifications" | "sessions" | "support" | "queue" | "infrastructure" | "services" | "templates" | "ai" | "licenses" | "mailboxes" | "campaigns" | "automations" | "routes" | "health";
+type Tab = "overview" | "users" | "referrals" | "mainstreetShield" | "payments" | "wallets" | "notifications" | "sessions" | "support" | "queue" | "infrastructure" | "services" | "templates" | "ai" | "licenses" | "mailboxes" | "campaigns" | "automations" | "routes" | "health";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "overview", label: "Overview" },
@@ -111,12 +111,9 @@ const TABS: Array<{ id: Tab; label: string }> = [
   // Invite-only / hidden-login (owner, 2026-10-16) — per-user invite links,
   // the who-came-through-whom tree, copy + email actions, bulk send.
   { id: "referrals", label: "Referrals" },
-  // MainStreet Shield — separate domain (mainstreetmint.click). Admin can
-  // generate/mainstreet referral codes from the same place they manage
-  // spaceworker users. Opens the MainStreet Shield admin referrals page.
-  { id: "mainstreetReferrals", label: "MainStreet Referrals" },
-  // MainStreet Shield — tier management for mainstreetmint.click users.
-  // Admin sets per-user tier (1/3/5) which gates VM + MSS Agent access.
+  // MainStreet Shield — tier management + referral code generation for
+  // mainstreetmint.click users. Admin sets per-user tier (1/3/5) which gates
+  // VM + MSS Agent access, and generates referral codes for signup.
   { id: "mainstreetShield", label: "MainStreet Shield" },
   { id: "payments", label: "Payments" },
   { id: "wallets", label: "Wallets" },
@@ -271,7 +268,6 @@ export default function AdminPanel({ initialUsers }: { initialUsers: AdminUser[]
             component and its jump now live behind that private route only. */}
         {tab === "users" && <UsersTab initialUsers={initialUsers} />}
         {tab === "referrals" && <ReferralsPanel />}
-        {tab === "mainstreetReferrals" && <MainStreetReferralsTab />}
         {tab === "mainstreetShield" && <MainStreetShieldTab />}
         {tab === "payments" && <PaymentsTab />}
         {tab === "wallets" && <WalletsTab users={initialUsers} />}
@@ -5917,155 +5913,6 @@ function RoutesTab() {
 }
 
 
-// MainStreet Shield referrals tab — opens the MainStreet Shield admin
-// referrals page (separate domain: mainstreetmint.click) in a new tab.
-// Shows a card with the link and a short description so admins can manage
-// MainStreet Shield referral codes from the same shell they use for
-// spaceworker users.
-function MainStreetReferralsTab() {
-  const [code, setCode] = useState<string | null>(null);
-  const [email, setEmail] = useState("");
-  const [expiresInDays, setExpiresInDays] = useState("7");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const [success, setSuccess] = useState("");
-
-  async function generateCode(e: React.FormEvent) {
-    e.preventDefault();
-    setLoading(true);
-    setError("");
-    setSuccess("");
-    try {
-      const res = await fetch("/api/admin/mainstreet/invites", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email: email || undefined,
-          expiresInDays: parseInt(expiresInDays, 10) || 7,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Failed to generate code");
-      setCode(data.invite.token);
-      setSuccess(`Referral code generated: ${data.invite.token}`);
-    } catch (err: any) {
-      setError(err.message ?? "Failed to generate code");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  return (
-    <div className="rounded-xl border border-zinc-200 bg-white p-8 dark:border-zinc-800 dark:bg-zinc-900">
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h2 className="text-xl font-semibold tracking-tight">
-            MainStreet Shield Referrals
-          </h2>
-          <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-            Generate MainStreet Shield referral codes and share the signup link
-            with businesses. Codes are created on mainstreetmint.click.
-          </p>
-        </div>
-        <a
-          href="https://mainstreetmint.click/admin/referrals"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center gap-2 rounded bg-zinc-900 px-3 py-2 text-xs font-medium text-white hover:bg-zinc-800 transition-colors"
-        >
-          Open MainStreet Referrals
-        </a>
-      </div>
-
-      <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-6 mb-8 dark:border-zinc-800 dark:bg-zinc-900/50">
-        <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-4">
-          Generate Referral Code
-        </h3>
-        <form onSubmit={generateCode} className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
-          <div>
-            <label className="block text-xs font-medium text-zinc-500 dark:text-zinc-400 mb-1">
-              Email (optional)
-            </label>
-            <input
-              type="email"
-              placeholder="user@example.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="w-full rounded border border-zinc-300 px-3 py-2 text-sm focus:ring-2 focus:ring-brand-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-zinc-500 dark:text-zinc-400 mb-1">
-              Expires (days)
-            </label>
-            <input
-              type="number"
-              min="1"
-              value={expiresInDays}
-              onChange={(e) => setExpiresInDays(e.target.value)}
-              className="w-full rounded border border-zinc-300 px-3 py-2 text-sm focus:ring-2 focus:ring-brand-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-            />
-          </div>
-          <div className="md:col-span-1">
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full rounded bg-brand-600 px-4 py-2 text-xs font-medium text-white hover:bg-brand-700 disabled:bg-zinc-300 transition-colors"
-            >
-              {loading ? "Generating…" : "Generate Code"}
-            </button>
-          </div>
-        </form>
-        {error && (
-          <p className="mt-3 text-xs text-red-600 dark:text-red-400">{error}</p>
-        )}
-        {success && (
-          <p className="mt-3 text-xs text-brand-700 dark:text-brand-300 font-medium">
-            {success}
-          </p>
-        )}
-        {code && (
-          <div className="mt-4 rounded border border-brand-200 bg-brand-50 p-3 dark:border-brand-700/30 dark:bg-brand-900/20">
-            <span className="text-xs font-mono text-brand-700 dark:text-brand-400">
-              Link:{" "}
-              <a
-                href={`https://mainstreetmint.click/signup?ref=${code}`}
-                className="text-brand-600 dark:text-brand-400 underline"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                https://mainstreetmint.click/signup?ref={code}
-              </a>
-            </span>
-          </div>
-        )}
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800 dark:bg-zinc-800/50">
-          <div className="text-xs font-mono text-zinc-500 dark:text-zinc-400">
-            Active referral codes
-          </div>
-          <div className="mt-1 text-2xl font-mono font-bold text-fg">—</div>
-        </div>
-        <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800 dark:bg-zinc-800/50">
-          <div className="text-xs font-mono text-zinc-500 dark:text-zinc-400">
-            Pending applications
-          </div>
-          <div className="mt-1 text-2xl font-mono font-bold text-fg">—</div>
-        </div>
-        <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800 dark:bg-zinc-800/50">
-          <div className="text-xs font-mono text-zinc-500 dark:text-zinc-400">
-            Domain
-          </div>
-          <div className="mt-1 text-2xl font-mono font-bold text-fg">
-            mainstreetmint.click
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // MainStreet Shield tier management tab
@@ -6112,6 +5959,36 @@ function MainStreetShieldTab() {
     "3": "MSS Agent access. No VM creation.",
     "5": "Full access: VM + MSS Agent + company + workflows.",
   };
+
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteExpires, setInviteExpires] = useState("30");
+  const [inviteLoading, setInviteLoading] = useState(false);
+  const [inviteError, setInviteError] = useState("");
+  const [inviteCode, setInviteCode] = useState("");
+
+  async function generateInvite(e: React.FormEvent) {
+    e.preventDefault();
+    setInviteLoading(true);
+    setInviteError("");
+    setInviteCode("");
+    try {
+      const res = await fetch("/api/admin/mainstreet/invites", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: inviteEmail || undefined,
+          expiresInDays: parseInt(inviteExpires, 10) || 30,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Failed to generate code");
+      setInviteCode(data.invite?.token ?? "");
+    } catch (err: any) {
+      setInviteError(err.message ?? "Failed to generate code");
+    } finally {
+      setInviteLoading(false);
+    }
+  }
 
   async function setTier(userId: string, tier: string) {
     setSaving(userId);
@@ -6233,6 +6110,61 @@ function MainStreetShieldTab() {
             )}
           </tbody>
         </table>
+      </div>
+
+      <div className="mt-8 p-6 rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+        <div className="flex items-center justify-between mb-6">
+          <h3 className="text-lg font-semibold tracking-tight">Generate Referral Code</h3>
+          <p className="text-sm text-zinc-500 dark:text-zinc-400">Share this signup link with businesses</p>
+        </div>
+        <form onSubmit={generateInvite} className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="flex flex-col gap-2">
+            <label className="text-xs font-medium text-zinc-600 dark:text-zinc-300">Email (optional)</label>
+            <input
+              type="email"
+              placeholder="user@example.com"
+              value={inviteEmail}
+              onChange={(e) => setInviteEmail(e.target.value)}
+              className="rounded border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+            />
+          </div>
+          <div className="flex flex-col gap-2">
+            <label className="text-xs font-medium text-zinc-600 dark:text-zinc-300">Expires (days)</label>
+            <input
+              type="number"
+              placeholder="30"
+              value={inviteExpires}
+              onChange={(e) => setInviteExpires(e.target.value)}
+              className="rounded border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={inviteLoading}
+            className="rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50 dark:hover:bg-emerald-600"
+          >
+            {inviteLoading ? "Generating…" : "Generate Code"}
+          </button>
+        </form>
+
+        {inviteError && (
+          <p className="mt-3 text-sm text-red-600 dark:text-red-400">{inviteError}</p>
+        )}
+        {inviteCode && (
+          <div className="mt-4 p-4 rounded border border-emerald-200 bg-emerald-50 dark:border-emerald-500/30 dark:bg-emerald-900/20">
+            <p className="text-xs font-mono text-emerald-800 dark:text-emerald-400 mb-2">
+              Referral code: {inviteCode}
+            </p>
+            <a
+              href={`https://mainstreetmint.click/signup?ref=${inviteCode}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-2 rounded bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 dark:hover:bg-emerald-600"
+            >
+              Copy Signup Link
+            </a>
+          </div>
+        )}
       </div>
 
       <div className="mt-4 p-4 rounded border border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900/50">
