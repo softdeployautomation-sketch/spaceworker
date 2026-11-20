@@ -1,6 +1,6 @@
 # SpaceWorker
 
-Multi-tenant automation-tools SaaS — lead extraction, filtering, and email outreach today; more tools (with user-defined chaining) later. See `task/PLAN.md` for full architecture and product context.
+Multi-tenant automation-tools SaaS — lead extraction, filtering, email outreach campaigns, encrypted mailbox credentials, manual crypto payment verification, admin panel, and persistent browser profiles.
 
 ## Repo structure
 
