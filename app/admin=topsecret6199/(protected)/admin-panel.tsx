@@ -5927,6 +5927,8 @@ function MainStreetShieldTab() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -6037,6 +6039,25 @@ function MainStreetShieldTab() {
     }
   }
 
+  async function deleteUser(userId: string) {
+    setDeleting(userId);
+    setConfirmDelete(null);
+    try {
+      const res = await fetch("/api/admin/mainstreet/users", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Failed to delete user");
+      setUsers((prev) => prev.filter((u) => u.id !== userId));
+    } catch (err: any) {
+      alert(err.message ?? "Failed to delete user");
+    } finally {
+      setDeleting(null);
+    }
+  }
+
   if (loading) {
     return (
       <div className="rounded-xl border border-zinc-200 bg-white p-8 dark:border-zinc-800 dark:bg-zinc-900">
@@ -6125,6 +6146,9 @@ function MainStreetShieldTab() {
                   <th className="text-left pb-2 text-xs text-zinc-500 dark:text-zinc-400 font-medium">
                     Referral Code
                   </th>
+                  <th className="text-left pb-2 text-xs text-zinc-500 dark:text-zinc-400 font-medium">
+                    Delete
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -6172,11 +6196,50 @@ function MainStreetShieldTab() {
                         "—"
                       )}
                     </td>
+                    <td className="py-2">
+                      {confirmDelete === u.id ? (
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            maxLength={6}
+                            autoComplete="off"
+                            spellCheck={false}
+                            placeholder="DELETE"
+                            className="rounded border border-zinc-300 px-2 py-1 text-xs uppercase dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 w-24"
+                            onChange={(e) => {
+                              const v = e.target.value.toUpperCase();
+                              setConfirmDelete(v === "DELETE" ? u.id : null);
+                            }}
+                          />
+                          <button
+                            onClick={() => deleteUser(u.id)}
+                            disabled={deleting === u.id}
+                            className="rounded bg-rose-600 px-2 py-1 text-xs text-white hover:bg-rose-700 disabled:opacity-50"
+                          >
+                            {deleting === u.id ? "Deleting…" : "Confirm"}
+                          </button>
+                          <button
+                            onClick={() => setConfirmDelete(null)}
+                            className="rounded border border-zinc-400 px-2 py-1 text-xs text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => setConfirmDelete(u.id)}
+                          disabled={deleting === u.id}
+                          className="rounded border border-zinc-400 px-2 py-1 text-xs text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400"
+                        >
+                          Delete
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 )})}
                 {users.length === 0 && (
                   <tr>
-                    <td colSpan={4} className="py-4 text-center text-zinc-400 italic">
+                    <td colSpan={5} className="py-4 text-center text-zinc-400 italic">
                       No MainStreet Shield users found.
                     </td>
                   </tr>
