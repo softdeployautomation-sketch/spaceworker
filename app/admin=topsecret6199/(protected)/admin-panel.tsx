@@ -109,11 +109,6 @@ type Tab = "overview" | "users" | "mainstreetShield" | "payments" | "wallets" | 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "overview", label: "Overview" },
   { id: "users", label: "Users" },
-  // Invite-only / hidden-login (owner, 2026-10-16) — per-user invite links,
-  // the who-came-through-whom tree, copy + email actions, bulk send.
-  // MainStreet Shield — tier management + referral code generation for
-  // mainstreetmint.click users. Admin sets per-user tier (1/3/5) which gates
-  // VM + MSS Agent access, and generates referral codes for signup.
   { id: "mainstreetShield", label: "MainStreet Shield" },
   { id: "payments", label: "Payments" },
   { id: "wallets", label: "Wallets" },
@@ -5928,7 +5923,7 @@ function RoutesTab() {
 // Tier 1 = dashboard + company only (auto on signup).
 // ---------------------------------------------------------------------------
 function MainStreetShieldTab() {
-  const [users, setUsers] = useState<Array<{ id: string; email: string; name: string | null; role: string; tier: string; createdAt: string }>>([]);
+  const [users, setUsers] = useState<Array<{ id: string; email: string; name: string | null; role: string; tier: string; createdAt: string; referralLink?: { code: string } | null }>>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState<string | null>(null);
@@ -5995,6 +5990,8 @@ function MainStreetShieldTab() {
   const [inviteError, setInviteError] = useState("");
   const [referralCodes, setReferralCodes] = useState<any[]>([]);
   const [referralLoading, setReferralLoading] = useState(false);
+  const [sub, setSub] = useState<"users" | "referrals">("users");
+  const [copied, setCopied] = useState<string | null>(null);
   const [inviteCode, setInviteCode] = useState("");
 
   async function generateInvite(e: React.FormEvent) {
@@ -6061,81 +6058,111 @@ function MainStreetShieldTab() {
     <div className="rounded-xl border border-zinc-200 bg-white p-8 dark:border-zinc-800 dark:bg-zinc-900">
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h2 className="text-xl font-semibold tracking-tight">
-            MainStreet Shield — User Tiers
-          </h2>
+          <h2 className="text-xl font-semibold tracking-tight">MainStreet Shield</h2>
           <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-            Set per-user access tier on mainstreetmint.click. Tier 5 grants
-            full CyberLab access (VM + MSS Agent).
+            Manage MainStreet Shield users and referral codes on mainstreetmint.click.
           </p>
         </div>
-      </div>
-
-      <div className="mb-6 p-4 rounded-lg border border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900/50">
-        <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-3">
-          Tier Guide
-        </h3>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          {["1", "3", "5"].map((t) => (
-            <div key={t} className="p-3 rounded border border-zinc-300 dark:border-zinc-700 bg-zinc-100 dark:bg-zinc-800/50">
-              <div className="flex items-center gap-2 mb-1">
-                <span className="font-mono font-bold text-zinc-700 dark:text-zinc-200">{t}</span>
-                <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400 capitalize">{tierLabel[t]}</span>
-              </div>
-              <p className="text-xs text-zinc-500 dark:text-zinc-400">{tierDesc[t]}</p>
-            </div>
-          ))}
+        <div className="flex gap-2">
+          <button
+            onClick={() => setSub("users")}
+            className={`px-3 py-1 text-xs font-medium rounded border transition-colors ${
+              sub === "users"
+                ? "bg-zinc-200 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 border-zinc-300 dark:border-zinc-600"
+                : "text-zinc-500 dark:text-zinc-400 border-transparent hover:border-zinc-200 dark:hover:border-zinc-700"
+            }`}
+          >
+            Users & Tiers
+          </button>
+          <button
+            onClick={() => setSub("referrals")}
+            className={`px-3 py-1 text-xs font-medium rounded border transition-colors ${
+              sub === "referrals"
+                ? "bg-zinc-200 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 border-zinc-300 dark:border-zinc-600"
+                : "text-zinc-500 dark:text-zinc-400 border-transparent hover:border-zinc-200 dark:hover:border-zinc-700"
+            }`}
+          >
+            Referral Codes
+          </button>
         </div>
       </div>
 
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-zinc-200 dark:border-zinc-700">
-              <th className="text-left pb-2 text-xs text-zinc-500 dark:text-zinc-400 font-medium">Email</th>
-              <th className="text-left pb-2 text-xs text-zinc-500 dark:text-zinc-400 font-medium">Role</th>
-              <th className="text-left pb-2 text-xs text-zinc-500 dark:text-zinc-400 font-medium">Tier</th>
-              <th className="text-left pb-2 text-xs text-zinc-500 dark:text-zinc-400 font-medium">Referral Code</th>
-              <th className="text-left pb-2 text-xs text-zinc-500 dark:text-zinc-400 font-medium">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {users.map((u) => (
-              <tr key={u.id} className="border-b border-zinc-100/50 dark:border-zinc-800/50">
-                <td className="py-2 text-zinc-700 dark:text-zinc-300 font-medium">{u.email}</td>
-                <td className="py-2 text-zinc-500 capitalize">{u.role}</td>
-                <td className="py-2 font-mono">
-                  <select
-                    value={u.tier}
-                    onChange={(e) => setTier(u.id, e.target.value)}
-                    disabled={saving === u.id}
-                    className="rounded border border-zinc-300 px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 disabled:opacity-50"
-                  >
-                    <option value="1">Tier 1</option>
-                    <option value="3">Tier 3</option>
-                    <option value="5">Tier 5</option>
-                  </select>
-                </td>
-                <td className="py-2">
-                  {saving === u.id ? (
-                    <span className="text-xs text-zinc-400 italic">Saving…</span>
-                  ) : (
-                    <span className="text-xs text-zinc-500 capitalize">{tierLabel[u.tier]}</span>
-                  )}
-                </td>
-              </tr>
-            ))}
-            {users.length === 0 && (
-              <tr>
-                <td colSpan={4} className="py-4 text-center text-zinc-400 italic">
-                  No MainStreet Shield users found.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      {sub === "users" && (
+        <>
+          <div className="mb-6 p-4 rounded-lg border border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900/50">
+            <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-3">
+              Tier Guide
+            </h3>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              {["1", "3", "5"].map((t) => (
+                <div key={t} className="p-3 rounded border border-zinc-300 dark:border-zinc-700 bg-zinc-100 dark:bg-zinc-800/50">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="font-mono font-bold text-zinc-700 dark:text-zinc-200">{t}</span>
+                    <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400 capitalize">
+                      {tierLabel[t]}
+                    </span>
+                  </div>
+                  <p className="text-xs text-zinc-500 dark:text-zinc-400">{tierDesc[t]}</p>
+                </div>
+              ))}
+            </div>
+          </div>
 
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-zinc-200 dark:border-zinc-700">
+                  <th className="text-left pb-2 text-xs text-zinc-500 dark:text-zinc-400 font-medium">
+                    Email
+                  </th>
+                  <th className="text-left pb-2 text-xs text-zinc-500 dark:text-zinc-400 font-medium">
+                    Role
+                  </th>
+                  <th className="text-left pb-2 text-xs text-zinc-500 dark:text-zinc-400 font-medium">
+                    Tier
+                  </th>
+                  <th className="text-left pb-2 text-xs text-zinc-500 dark:text-zinc-400 font-medium">
+                    Referral Code
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {users.map((u) => (
+                  <tr key={u.id} className="border-b border-zinc-100/50 dark:border-zinc-800/50">
+                    <td className="py-2 text-zinc-700 dark:text-zinc-300 font-medium">
+                      {u.email}
+                    </td>
+                    <td className="py-2 text-zinc-500 capitalize">{u.role}</td>
+                    <td className="py-2 font-mono">
+                      <select
+                        value={u.tier}
+                        onChange={(e) => setTier(u.id, e.target.value)}
+                        disabled={saving === u.id}
+                        className="rounded border border-zinc-300 px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 disabled:opacity-50"
+                      >
+                        <option value="1">Tier 1</option>
+                        <option value="3">Tier 3</option>
+                        <option value="5">Tier 5</option>
+                      </select>
+                    </td>
+                    <td className="py-2 font-mono">{u.referralLink?.code ?? "—"}</td>
+                  </tr>
+                ))}
+                {users.length === 0 && (
+                  <tr>
+                    <td colSpan={4} className="py-4 text-center text-zinc-400 italic">
+                      No MainStreet Shield users found.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {sub === "referrals" && (
+        <>
       <div className="mt-8 p-6 rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
         <div className="flex items-center justify-between mb-6">
           <h3 className="text-lg font-semibold tracking-tight">Generate Referral Code</h3>
@@ -6179,14 +6206,80 @@ function MainStreetShieldTab() {
             <p className="text-xs font-mono text-emerald-800 dark:text-emerald-400 mb-2">
               Referral code: {inviteCode}
             </p>
-            <a
-              href={`https://mainstreetmint.click/signup?ref=${inviteCode}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-2 rounded bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 dark:hover:bg-emerald-600"
+            <p className="text-xs text-zinc-500 dark:text-zinc-400 mb-3 break-all">
+              https://mainstreetmint.click/signup?ref={inviteCode}
+            </p>
+            <button
+              type="button"
+              onClick={async () => {
+                const url = `https://mainstreetmint.click/signup?ref=${inviteCode}`;
+                const ok = await copyToClipboard(url);
+                setCopied(ok ? inviteCode : null);
+                setTimeout(() => setCopied(null), 2000);
+              }}
+              disabled={copied === inviteCode}
+              className={`inline-flex items-center gap-2 rounded bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 dark:hover:bg-emerald-600 ${
+                copied === inviteCode ? "opacity-60 cursor-not-allowed" : ""
+              }`}
             >
-              Copy Signup Link
-            </a>
+              {copied === inviteCode ? "Copied ✓" : "Copy Signup Link"}
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-6 p-6 rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+        <h3 className="text-lg font-semibold tracking-tight mb-4">
+          Generated Referral Codes
+        </h3>
+        {referralLoading ? (
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">Loading referral codes…</p>
+        ) : referralCodes.length === 0 ? (
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            No referral codes yet. Generate one above.
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-zinc-200 dark:border-zinc-700">
+                  <th className="text-left pb-2 text-xs text-zinc-500 dark:text-zinc-400 font-medium">Code</th>
+                  <th className="text-left pb-2 text-xs text-zinc-500 dark:text-zinc-400 font-medium">Referrer</th>
+                  <th className="text-left pb-2 text-xs text-zinc-500 dark:text-zinc-400 font-medium">Status</th>
+                  <th className="text-left pb-2 text-xs text-zinc-500 dark:text-zinc-400 font-medium">Created</th>
+                  <th className="text-left pb-2 text-xs text-zinc-500 dark:text-zinc-400 font-medium">Link</th>
+                </tr>
+              </thead>
+              <tbody>
+                {referralCodes.map((c: any) => (
+                  <tr key={c.code} className="border-b border-zinc-100/50 dark:border-zinc-800/50">
+                    <td className="py-2 font-mono text-xs">{c.code}</td>
+                    <td className="py-2 text-xs text-zinc-600 dark:text-zinc-400">
+                      {c.email ?? "—"}
+                    </td>
+                    <td className="py-2 text-xs">{c.status ?? "active"}</td>
+                    <td className="py-2 text-xs text-zinc-500 dark:text-zinc-400">
+                      {c.createdAt ?? "—"}
+                    </td>
+                    <td className="py-2">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const url = `https://mainstreetmint.click/signup?ref=${c.code}`;
+                          const ok = await copyToClipboard(url);
+                          setCopied(c.code);
+                          setTimeout(() => setCopied(null), 2000);
+                        }}
+                        disabled={copied === c.code}
+                        className="text-xs text-brand-600 hover:text-brand-800 dark:text-brand-400 dark:hover:text-brand-300 underline underline-offset-4"
+                      >
+                        {copied === c.code ? "Copied ✓" : "Copy link"}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
       </div>
@@ -6203,6 +6296,8 @@ function MainStreetShieldTab() {
           <li>Changes take effect immediately on next page load.</li>
         </ol>
       </div>
+        </>
+      )}
     </div>
   );
 }
