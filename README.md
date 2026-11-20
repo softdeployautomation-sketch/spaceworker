@@ -1,10 +1,10 @@
 # SpaceWorker
 
-Multi-tenant automation-tools SaaS — lead extraction, filtering, and email outreach today; more tools (with user-defined chaining) later. See `PLAN.md` for full architecture and product context.
+Multi-tenant automation-tools SaaS — lead extraction, filtering, and email outreach today; more tools (with user-defined chaining) later. See `task/PLAN.md` for full architecture and product context.
 
 ## Repo structure
 
-- `PLAN.md` — architecture, data model, decisions and why they were made. Read this first.
+- `task/PLAN.md` — architecture, data model, decisions and why they were made. Read this first.
 - `task/` — all task documentation (`TASK_*.md`, `PLAN_*.md`, `BATCH_*.md`, `CLINE_*.md`, `DESIGN_*.md`, `HANDOFF_*.md`, `DISPATCH_*.md`, `EXE_*.md`, `FINAL_*.md`) — ordered build tasks with clear dependencies and verification steps. New task files are created under `task/` from the start; never at the repo root.
 
 ## Task Status & Assignment
