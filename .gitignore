@@ -43,3 +43,8 @@ browser-sessions-tmp/
 # "Build EXE" workflow and hosted on the VPS at public/downloads/ — see
 # PLAN_FIX_MAILER_EXE.md. The directory itself stays tracked via .gitkeep.
 public/downloads/*.exe
+# Playbook docs with secrets — never commit to GitHub
+HOW_WE_MOVE_FAST.md
+PROMPT_*.md
+SENIOR_*.md
+_STEPS.md
