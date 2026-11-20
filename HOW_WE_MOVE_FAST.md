@@ -2,6 +2,10 @@
 
 **Written 2026-09-21** after a long session that shipped and live-verified a large batch of licensing/payment/security work (Tasks 45–49 + the store/pricing/trial features). This captures the exact mechanics that made verification fast and safe, so fixing Tasks 49–54 doesn't require rediscovering any of it. Read this before touching deploy, migrations, or EXE builds on this repo.
 
+## Repo Structure — task files live under `task/`
+
+All task documentation (`TASK_*.md`, `PLAN_*.md`, `BATCH_*.md`, `CLINE_*.md`, `DESIGN_*.md`, `HANDOFF_*.md`, `DISPATCH_*.md`, `EXE_*.md`, `FINAL_*.md`) lives under the `task/` folder at the repo root — **never at the repo root itself**. Any new task file must be created under `task/` from the start; never drop task files at the top level. This keeps the repo root clean for source code and config only.
+
 ## 0. Access — read this first
 
 - **VPS** (**207.244.224.57** since the 2026-11-04 rebuild — runs `spaceworker.service`, the sibling `vantra.service`, `nats`/`nats-api`, and `meshcentral`): `ssh -i ~/.ssh/tacticalrmm_vps -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@207.244.224.57`. That key file already exists on this machine — reference it by path, never copy/print its contents into a script, log, or committed file. The old host `164.68.105.96` is dead — any deploy script that still targets it must be fixed before use (§0a).
