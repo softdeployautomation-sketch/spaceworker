@@ -377,14 +377,14 @@ These are the checks I will run after each cline task completes:
 - S1-1 — Lab Console `/shield` (VM optional, tools run from server) — commit 00ef11e
 - S0-9 — Fix `/api/auth/logout` 404 — commit ce7866e
 - S0-2 — Password verification middleware — commit 6ccccda
+- S1-2 — Assets page CRUD — commit b1d3923
 
 **Recommended next priorities (pick one):**
 
 1. **S0-3 — Rate limiting on auth endpoints** (P0) — login/signup brute-force protection
-2. **S1-2 — Assets page CRUD** (P0) — add/view/delete monitored targets (IPs, domains, URLs)
-3. **S0-8 — Clean up test/previous users** (P1) — delete via admin Users & Tiers
+2. **S0-8 — Clean up test/previous users** (P1) — delete via admin Users & Tiers
 
-**Deploy decision:** Commits `ce7866e` and `6ccccda` are on `main` but NOT yet deployed to `mainstreetmint.click`. You must dispatch the deploy workflow before live verification can run for any new changes.
+**Deploy decision:** Commits `ce7866e`, `6ccccda`, and `b1d3923` are on `main` but NOT yet deployed to `mainstreetmint.click`. You must dispatch the deploy workflow before live verification can run for any new changes (including S1-2 AC-2 through AC-11).
 
 **Cloudflare research:** Part of S5-1 — will research once we reach Phase 5.
 
