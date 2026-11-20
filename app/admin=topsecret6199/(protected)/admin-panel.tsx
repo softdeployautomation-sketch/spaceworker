@@ -6230,7 +6230,7 @@ function MainStreetShieldTab() {
         {inviteCode && (
           <div className="mt-4 p-4 rounded border border-emerald-200 bg-emerald-50 dark:border-emerald-500/30 dark:bg-emerald-900/20">
             <p className="text-xs text-zinc-500 dark:text-zinc-400 mb-3 break-all">
-              https://mainstreetmint.click/signup?ref=${inviteCode}
+              {`https://mainstreetmint.click/signup?ref=${inviteCode}`}
             </p>
             <button
               type="button"
