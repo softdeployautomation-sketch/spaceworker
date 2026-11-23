@@ -5923,16 +5923,18 @@ function RoutesTab() {
 // Tier 1 = dashboard + company only (auto on signup).
 // ---------------------------------------------------------------------------
 function MainStreetShieldTab() {
+  const confirm = useConfirm();
   const [users, setUsers] = useState<Array<{ id: string; email: string; name: string | null; role: string; tier: string; createdAt: string; referralLink?: { code: string } | null }>>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [sub, setSub] = useState<"users" | "referrals" | "prompts" | "infrastructure">("users");
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/admin/mainstreet/users", { headers: { "X-Service-Token": "a6c7306c27af5bbf1643b298e2b4c7d9" } })
+    fetch("/api/admin/mainstreet/users")
       .then((r) => {
         if (!r.ok) throw new Error("Failed to load users");
         return r.json();
@@ -5957,9 +5959,7 @@ function MainStreetShieldTab() {
     async function loadReferrals() {
       setReferralLoading(true);
       try {
-        const res = await fetch("/api/admin/mainstreet/referrals", {
-          headers: { "X-Service-Token": "a6c7306c27af5bbf1643b298e2b4c7d9" },
-        });
+        const res = await fetch("/api/admin/mainstreet/referrals");
         if (!cancelled && res.ok) {
           const data = await res.json();
           setReferralCodes(data.referrals ?? []);
@@ -5992,7 +5992,6 @@ function MainStreetShieldTab() {
   const [inviteError, setInviteError] = useState("");
   const [referralCodes, setReferralCodes] = useState<any[]>([]);
   const [referralLoading, setReferralLoading] = useState(false);
-  const [sub, setSub] = useState<"users" | "referrals">("users");
   const [copied, setCopied] = useState<string | null>(null);
   const [copiedUserId, setCopiedUserId] = useState<string | null>(null);
   const [inviteCode, setInviteCode] = useState("");
@@ -6105,6 +6104,26 @@ function MainStreetShieldTab() {
             }`}
           >
             Referral Codes
+          </button>
+          <button
+            onClick={() => setSub("prompts")}
+            className={`px-3 py-1 text-xs font-medium rounded border transition-colors ${
+              sub === "prompts"
+                ? "bg-zinc-200 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 border-zinc-300 dark:border-zinc-600"
+                : "text-zinc-500 dark:text-zinc-400 border-transparent hover:border-zinc-200 dark:hover:border-zinc-700"
+            }`}
+          >
+            Prompts
+          </button>
+          <button
+            onClick={() => setSub("infrastructure")}
+            className={`px-3 py-1 text-xs font-medium rounded border transition-colors ${
+              sub === "infrastructure"
+                ? "bg-zinc-200 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 border-zinc-300 dark:border-zinc-600"
+                : "text-zinc-500 dark:text-zinc-400 border-transparent hover:border-zinc-200 dark:hover:border-zinc-700"
+            }`}
+          >
+            Infrastructure
           </button>
         </div>
       </div>
@@ -6384,6 +6403,504 @@ function MainStreetShieldTab() {
       </div>
         </>
       )}
+      {sub === "prompts" && (
+        <MssPromptsTab />
+      )}
+      {sub === "infrastructure" && (
+        <MssInfrastructureTab />
+      )}
+    </div>
+  );
+}
+
+function MssPromptsTab() {
+  const confirm = useConfirm();
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [draftBody, setDraftBody] = useState("");
+  const [draftRationale, setDraftRationale] = useState("");
+  const [saving, setSaving] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch("/api/admin/mss/prompts");
+      if (!res.ok) throw new Error("Failed to load prompts");
+      setData(await res.json());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load prompts");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const selectKey = (key: string) => {
+    setSelectedKey(key);
+    const entry = data?.[key];
+    const active = entry?.active;
+    setDraftBody(active ? active.body : "");
+    setDraftRationale("");
+  };
+
+  async function saveDraft() {
+    if (!selectedKey) return;
+    if (draftBody.length < 100 || draftBody.length > 8000) {
+      setError("Body must be between 100 and 8000 characters");
+      return;
+    }
+    if (/<script/i.test(draftBody)) {
+      setError("Body must not contain <script>");
+      return;
+    }
+    setSaving("save");
+    setError("");
+    try {
+      const res = await fetch("/api/admin/mss/prompts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: selectedKey, body: draftBody, rationale: draftRationale || undefined }),
+      });
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(result.error ?? "Failed to save draft");
+      setDraftBody("");
+      setDraftRationale("");
+      await load();
+    } catch (err: any) {
+      setError(err.message ?? "Failed to save draft");
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  async function promptConfirm(kind: "activate" | "reject" | "revert" | "delete", id: string, version: number) {
+    const ok = await confirm({
+      title: kind === "delete" ? "Delete draft?" : `${kind.charAt(0).toUpperCase() + kind.slice(1)} draft?`,
+      description: kind === "delete"
+        ? "This draft will be archived and can no longer be activated."
+        : kind === "revert"
+          ? "This will archive the current active version and activate this archived version instead."
+          : `This will ${kind} draft version ${version}.`,
+      confirmLabel: kind === "delete" ? "Archive" : kind.charAt(0).toUpperCase() + kind.slice(1),
+    });
+    if (!ok) return;
+    setSaving(kind);
+    try {
+      const res = await fetch(`/api/admin/mss/prompts/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: kind }),
+      });
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(result.error ?? `Failed to ${kind}`);
+      await load();
+    } catch (err: any) {
+      setError(err.message ?? `Failed to ${kind}`);
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="rounded-xl border border-zinc-200 bg-white p-8 dark:border-zinc-800 dark:bg-zinc-900">
+        <h2 className="text-xl font-semibold tracking-tight">Prompts</h2>
+        <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">Loading prompt templates…</p>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="rounded-xl border border-zinc-200 bg-white p-8 dark:border-zinc-800 dark:bg-zinc-900">
+        <h2 className="text-xl font-semibold tracking-tight">Prompts</h2>
+        <p className="mt-1 text-sm text-red-600 dark:text-red-400">{error}</p>
+      </div>
+    );
+  }
+
+  const entries = data ? Object.entries(data) : [];
+
+  return (
+    <div className="rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-900">
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h2 className="text-xl font-semibold tracking-tight">Prompt Templates</h2>
+          <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+            Manage MainStreet Shield prompt templates. Agent-proposed drafts require admin activation.
+          </p>
+        </div>
+        <button
+          onClick={load}
+          disabled={loading}
+          className="rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-xs font-medium transition-colors hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:bg-zinc-800 disabled:opacity-50"
+        >
+          {loading ? "…" : "Refresh"}
+        </button>
+      </div>
+
+      {error && <p className="mb-4 text-sm text-red-600 dark:text-red-400">{error}</p>}
+
+      <div className="grid gap-4 md:grid-cols-12">
+        <div className="md:col-span-4">
+          <h3 className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-2">Templates</h3>
+          <div className="space-y-1 max-h-96 overflow-y-auto border border-zinc-200 rounded-lg dark:border-zinc-800">
+            {entries.length === 0 ? (
+              <div className="p-3 text-xs text-zinc-500 dark:text-zinc-400">No prompt templates found.</div>
+            ) : (
+              entries.map(([key, entry]: [string, any]) => (
+                <button
+                  key={key}
+                  onClick={() => selectKey(key)}
+                  className={`w-full text-left px-3 py-2 text-sm rounded border transition-colors ${
+                    selectedKey === key
+                      ? "bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 border-zinc-300 dark:border-zinc-600"
+                      : "text-zinc-600 dark:text-zinc-400 border-transparent hover:bg-zinc-50 dark:hover:bg-zinc-800/50"
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-xs">{key}</span>
+                    {entry.active ? (
+                      <span className="ml-auto text-[10px] rounded-full bg-emerald-100 px-1.5 py-0.5 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400">active v{entry.active.version}</span>
+                    ) : (
+                      <span className="ml-auto text-[10px] rounded-full bg-zinc-100 px-1.5 py-0.5 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">none</span>
+                    )}
+                    {entry.drafts && entry.drafts.some((d: any) => d.source === "agent") ? (
+                      <span className="ml-2 text-[10px] rounded-full bg-amber-100 px-1.5 py-0.5 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400">agent</span>
+                    ) : null}
+                  </div>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+
+        <div className="md:col-span-8">
+          {selectedKey ? (
+            <div className="space-y-4">
+              <div>
+                <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">{selectedKey}</h3>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                  Scope: {(data[selectedKey]?.active?.scopeKey ?? "global")} · Company: {(data[selectedKey]?.active?.companyId ?? "—")}
+                </p>
+              </div>
+
+              <div className="p-3 rounded border border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900/50">
+                <h4 className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-1">Active (v{data[selectedKey]?.active?.version ?? "—"})</h4>
+                <div className="text-xs font-mono text-zinc-600 dark:text-zinc-300 whitespace-pre-wrap break-all max-h-40 overflow-y-auto">
+                  {data[selectedKey]?.active?.body ?? "—"}
+                </div>
+                <div className="mt-2 flex gap-2 text-xs">
+                  <span className="font-mono text-zinc-400">source: {data[selectedKey]?.active?.source ?? "—"}</span>
+                  {data[selectedKey]?.active?.activatedAt && (
+                    <span className="font-mono text-zinc-400">activated: {new Date(data[selectedKey].active.activatedAt).toLocaleString()}</span>
+                  )}
+                </div>
+              </div>
+
+              <div className="p-3 rounded border border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900/50">
+                <h4 className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-1">Drafts</h4>
+                {(data[selectedKey]?.drafts ?? []).length === 0 ? (
+                  <p className="text-xs text-zinc-500 dark:text-zinc-400">No drafts.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {(data[selectedKey].drafts as any[]).map((d: any) => (
+                      <div key={d.id} className="p-2 rounded border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-xs font-mono text-zinc-600 dark:text-zinc-400">v{d.version} · {d.source}</span>
+                          <span className="text-xs text-zinc-500 dark:text-zinc-400">{new Date(d.createdAt).toLocaleString()}</span>
+                        </div>
+                        <div className="text-xs text-zinc-600 dark:text-zinc-300 whitespace-pre-wrap break-all max-h-24 overflow-y-auto mb-2">{d.body}</div>
+                        <div className="text-xs text-zinc-500 dark:text-zinc-400 mb-2">{d.rationale ?? "—"}</div>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => promptConfirm("activate", d.id, d.version)}
+                            disabled={saving === "activate"}
+                            className="px-2 py-1 text-xs rounded border border-zinc-300 bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800 disabled:opacity-50"
+                          >
+                            {saving === "activate" ? "…" : "Activate"}
+                          </button>
+                          <button
+                            onClick={() => promptConfirm("reject", d.id, d.version)}
+                            disabled={saving === "reject"}
+                            className="px-2 py-1 text-xs rounded border border-zinc-300 bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800 disabled:opacity-50"
+                          >
+                            {saving === "reject" ? "…" : "Reject"}
+                          </button>
+                          <button
+                            onClick={() => promptConfirm("revert", d.id, d.version)}
+                            disabled={saving === "revert"}
+                            className="px-2 py-1 text-xs rounded border border-zinc-300 bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800 disabled:opacity-50"
+                          >
+                            {saving === "revert" ? "…" : "Revert"}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="p-3 rounded border border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900/50">
+                <h4 className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-1">Archived Versions</h4>
+                {(data[selectedKey]?.versions ?? []).length === 0 ? (
+                  <p className="text-xs text-zinc-500 dark:text-zinc-400">No archived versions.</p>
+                ) : (
+                  <div className="space-y-1">
+                    {(data[selectedKey].versions as any[]).map((v: any) => (
+                      <div key={v.id} className="flex items-center justify-between px-2 py-1 text-xs border-b border-zinc-100 dark:border-zinc-800/50 last:border-0">
+                        <span className="font-mono text-zinc-500 dark:text-zinc-400">v{v.version}</span>
+                        <span className="text-zinc-500 dark:text-zinc-400">{v.activatedAt ? new Date(v.activatedAt).toLocaleDateString() : "—"}</span>
+                        <button
+                          onClick={() => promptConfirm("revert", v.id, v.version)}
+                          className="text-[10px] rounded border border-zinc-400 bg-white text-zinc-600 px-1.5 py-0.5 hover:bg-zinc-50 dark:border-zinc-600 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                        >
+                          Revert
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="p-3 rounded border border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900/50">
+                <h4 className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-1">Save New Draft</h4>
+                <label className="block text-xs text-zinc-500 dark:text-zinc-400 mb-1">Body ({draftBody.length}/8000)</label>
+                <textarea
+                  value={draftBody}
+                  onChange={(e) => setDraftBody(e.target.value)}
+                  className="w-full text-xs font-mono text-zinc-700 dark:text-zinc-300 rounded border border-zinc-300 dark:border-zinc-700 dark:bg-zinc-800 p-2 focus:outline-none focus:ring-1 focus:ring-zinc-500"
+                  rows={6}
+                ></textarea>
+                <label className="block text-xs text-zinc-500 dark:text-zinc-400 mt-2 mb-1">Why this change (rationale)</label>
+                <input
+                  value={draftRationale}
+                  onChange={(e) => setDraftRationale(e.target.value)}
+                  className="w-full text-xs rounded border border-zinc-300 dark:border-zinc-700 dark:bg-zinc-800 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-zinc-500"
+                  placeholder="Optional rationale"
+                />
+                <div className="mt-3 flex gap-2">
+                  <button
+                    onClick={saveDraft}
+                    disabled={saving === "save" || !selectedKey}
+                    className="rounded bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800 dark:bg-zinc-900 dark:hover:bg-zinc-800 disabled:opacity-50"
+                  >
+                    {saving === "save" ? "Saving…" : "Save Draft"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="pt-10 text-xs text-zinc-500 dark:text-zinc-400">Select a prompt template on the left.</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MssInfrastructureTab() {
+  const confirm = useConfirm();
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch("/api/admin/mss/infrastructure");
+      if (!res.ok) throw new Error("Failed to load infrastructure");
+      setData(await res.json());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load infrastructure");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function control(action: "start" | "stop" | "restart" | "freeze" | "unfreeze", reason?: string) {
+    const ok = await confirm({
+      title: `${action.charAt(0).toUpperCase() + action.slice(1)} VM?`,
+      description: action === "freeze"
+        ? "Freezing sets the kill switch. Running VMs are not automatically stopped."
+        : action === "unfreeze"
+          ? "Unfreezing clears the kill switch."
+          : `This will ${action} the VM.`,
+      confirmLabel: action.charAt(0).toUpperCase() + action.slice(1),
+      confirmVariant: action === "stop" || action === "freeze" ? "danger" : "primary",
+    });
+    if (!ok) return;
+    setSaving(action);
+    setError("");
+    try {
+      const res = await fetch("/api/admin/mss/infrastructure", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, reason }),
+      });
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(result.error ?? `Failed to ${action}`);
+      await load();
+    } catch (err: any) {
+      setError(err.message ?? `Failed to ${action}`);
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="rounded-xl border border-zinc-200 bg-white p-8 dark:border-zinc-800 dark:bg-zinc-900">
+        <h2 className="text-xl font-semibold tracking-tight">Infrastructure</h2>
+        <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">Loading infrastructure state…</p>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="rounded-xl border border-zinc-200 bg-white p-8 dark:border-zinc-800 dark:bg-zinc-900">
+        <h2 className="text-xl font-semibold tracking-tight">Infrastructure</h2>
+        <p className="mt-1 text-sm text-red-600 dark:text-red-400">{error}</p>
+      </div>
+    );
+  }
+
+  const svc = data?.service ?? {};
+  const ks = data?.killSwitch ?? {};
+  const vms = data?.vms ?? [];
+  const stats = data?.stats ?? {};
+
+  return (
+    <div className="rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-900">
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h2 className="text-xl font-semibold tracking-tight">Infrastructure</h2>
+          <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+            MainStreet Shield VM control — mainstreet-shield-vm.service.
+          </p>
+        </div>
+        <button
+          onClick={load}
+          disabled={loading}
+          className="rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-xs font-medium transition-colors hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:bg-zinc-800 disabled:opacity-50"
+        >
+          {loading ? "…" : "Refresh"}
+        </button>
+      </div>
+
+      {error && <p className="mb-4 text-sm text-red-600 dark:text-red-400">{error}</p>}
+
+      <div className="mb-6 p-3 rounded border border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900/50">
+        <h3 className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-2">Service State</h3>
+        <div className="grid gap-2 md:grid-cols-3 text-xs">
+          <div>
+            <span className="text-zinc-500 dark:text-zinc-400">Unit</span>
+            <div className="font-mono text-zinc-700 dark:text-zinc-300">mainstreet-shield-vm.service</div>
+          </div>
+          <div>
+            <span className="text-zinc-500 dark:text-zinc-400">Active State</span>
+            <div className={`font-mono font-medium ${svc.activeState === "active" ? "text-green-700 dark:text-green-400" : svc.activeState === "failed" ? "text-red-700 dark:text-red-400" : "text-zinc-600 dark:text-zinc-400"}`}>
+              {svc.activeState ?? "unknown"}
+            </div>
+          </div>
+          <div>
+            <span className="text-zinc-500 dark:text-zinc-400">Sub State</span>
+            <div className="font-mono text-zinc-700 dark:text-zinc-300">{svc.subState ?? "unknown"}</div>
+          </div>
+          <div>
+            <span className="text-zinc-500 dark:text-zinc-400">Memory</span>
+            <div className="font-mono text-zinc-700 dark:text-zinc-300">{svc.memoryMb == null ? "—" : `${svc.memoryMb} MB`}</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="mb-6 p-3 rounded border border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900/50">
+        <h3 className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-2">Kill Switch</h3>
+        <div className="flex items-center gap-3">
+          <span className={`text-xs font-medium rounded px-2 py-0.5 ${
+            ks.frozen ? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400" : "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400"
+          }`}>
+            {ks.frozen ? "FROZEN" : "Active"}
+          </span>
+          <span className="text-xs text-zinc-500 dark:text-zinc-400">
+            {ks.reason ?? "—"}{ks.frozenAt ? ` · ${new Date(ks.frozenAt).toLocaleString()}` : ""}
+          </span>
+        </div>
+        <div className="mt-3 flex gap-2">
+          <button
+            onClick={() => control(ks.frozen ? "unfreeze" : "freeze", ks.frozen ? undefined : "admin panel")}
+            disabled={saving === "freeze" || saving === "unfreeze"}
+            className={`px-3 py-1 text-xs rounded border transition-colors ${
+              ks.frozen
+                ? "border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-400 dark:hover:bg-emerald-800/40"
+                : "border-red-300 bg-red-50 text-red-700 hover:bg-red-100 dark:border-red-800 dark:bg-red-900/40 dark:text-red-400 dark:hover:bg-red-800/40"
+            }`}
+          >
+            {saving === "freeze" || saving === "unfreeze" ? "…" : ks.frozen ? "Unfreeze" : "Freeze"}
+          </button>
+        </div>
+      </div>
+
+      <div className="mb-6 p-3 rounded border border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900/50">
+        <h3 className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-2">VM Control</h3>
+        <div className="flex gap-2">
+          <button
+            onClick={() => control("start")}
+            disabled={saving === "start"}
+            className="px-3 py-1 text-xs rounded border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-800 disabled:opacity-50"
+          >
+            {saving === "start" ? "…" : "Start"}
+          </button>
+          <button
+            onClick={() => control("stop")}
+            disabled={saving === "stop"}
+            className="px-3 py-1 text-xs rounded border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-800 disabled:opacity-50"
+          >
+            {saving === "stop" ? "…" : "Stop"}
+          </button>
+          <button
+            onClick={() => control("restart")}
+            disabled={saving === "restart"}
+            className="px-3 py-1 text-xs rounded border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-800 disabled:opacity-50"
+          >
+            {saving === "restart" ? "…" : "Restart"}
+          </button>
+        </div>
+        <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+          Start resets the VM; Stop erases its disk. Confirm the lab VM is intentionally disposable before using these.
+        </p>
+      </div>
+
+      <div className="mb-6 p-3 rounded border border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900/50">
+        <h3 className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-2">Stats</h3>
+        <div className="grid gap-2 md:grid-cols-4 text-xs">
+          {[
+            { label: "Users by Tier", value: (data as any)?.stats?.usersByTier ?? 0 },
+            { label: "Running VMs", value: (data as any)?.stats?.runningVms ?? 0 },
+            { label: "Findings", value: (data as any)?.stats?.findings ?? 0 },
+            { label: "Workflows", value: (data as any)?.stats?.workflows ?? 0 },
+            { label: "Agent Sessions", value: (data as any)?.stats?.agentSessions ?? 0 },
+          ].map((s, i) => (
+            <div key={i} className="p-2 rounded border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+              <span className="text-zinc-500 dark:text-zinc-400 block text-xs">{s.label}</span>
+              <div className="font-mono font-semibold text-zinc-700 dark:text-zinc-300">{s.value}</div>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

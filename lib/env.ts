@@ -190,6 +190,7 @@ export const env = {
   adminEmail: (process.env.ADMIN_EMAIL || process.env.EMAIL_FROM || "").trim(),
 
   mainstreetServiceToken: optionalSecret("MAINSTREET_SERVICE_TOKEN"),
+  mssServiceToken: optionalSecret("MSS_SERVICE_TOKEN"),
 
   port: number("PORT", 3400),
 };
