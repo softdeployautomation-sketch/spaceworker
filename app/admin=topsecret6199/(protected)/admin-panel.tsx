@@ -6888,7 +6888,12 @@ function MssInfrastructureTab() {
         <h3 className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-2">Stats</h3>
         <div className="grid gap-2 md:grid-cols-4 text-xs">
           {[
-            { label: "Users by Tier", value: (data as any)?.stats?.usersByTier ?? 0 },
+            {
+              label: "Users by Tier",
+              value: (data as any)?.stats?.usersByTier
+                ?.map((t: any) => `T${t.tier}:${t.count}`)
+                .join(", ") ?? 0,
+            },
             { label: "Running VMs", value: (data as any)?.stats?.runningVms ?? 0 },
             { label: "Findings", value: (data as any)?.stats?.findings ?? 0 },
             { label: "Workflows", value: (data as any)?.stats?.workflows ?? 0 },
